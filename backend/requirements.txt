@@ -4,3 +4,6 @@ Flask-SQLAlchemy==3.1.1
 PyJWT==2.10.1
 python-dotenv==1.1.1
 PyMySQL==1.1.1
+Flask-Migrate==4.1.0
+pytest==9.1.1
+Flask-Limiter==4.1.1

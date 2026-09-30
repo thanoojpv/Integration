@@ -10,6 +10,12 @@ import {
   useAuth,
 } from './context/AuthContext'
 
+import {
+  NotificationProvider,
+} from './context/NotificationContext'
+
+import ProtectedRoute from './components/ProtectedRoute'
+
 
 // =========================================================
 // ADMIN PAGES
@@ -153,7 +159,9 @@ export default function App() {
 
     <AuthProvider>
 
-      <Routes>
+      <NotificationProvider>
+        
+        <Routes>
 
 
         {/* =================================================
@@ -206,13 +214,23 @@ export default function App() {
         ================================================= */}
 
         <Route
+
           path="/coding-exam"
-          element={<LearnerCodingExam />}
+          element={
+            <ProtectedRoute allowedRole="learner">
+              <LearnerCodingExam />
+            </ProtectedRoute>
+          }
         />
 
         <Route
+
           path="/coding-exam/:examId"
-          element={<LearnerCodingExam />}
+          element={
+            <ProtectedRoute allowedRole="learner">
+              <LearnerCodingExam />
+            </ProtectedRoute>
+          }
         />
 
 
@@ -222,53 +240,73 @@ export default function App() {
 
         <Route
           path="/admin"
-          element={<AdminDashboard />}
+          element={
+            <ProtectedRoute allowedRole="admin">
+              <AdminDashboard />
+            </ProtectedRoute>
+          }
         />
 
         <Route
           path="/admin/users"
-          element={<AdminUsers />}
+          element={
+            <ProtectedRoute allowedRole="admin">
+              <AdminUsers />
+            </ProtectedRoute>
+          }
         />
 
         <Route
           path="/admin/catalog"
-          element={<AdminCatalog />}
+          element={
+            <ProtectedRoute allowedRole="admin">
+              <AdminCatalog />
+            </ProtectedRoute>
+          }
         />
 
         <Route
           path="/admin/create-accounts"
-          element={<CreateAccounts />}
+          element={
+            <ProtectedRoute allowedRole="admin">
+              <CreateAccounts />
+            </ProtectedRoute>
+          }
         />
 
         <Route
           path="/admin/certificates"
-          element={<AdminCertificates />}
+          element={
+            <ProtectedRoute allowedRole="admin">
+              <AdminCertificates />
+            </ProtectedRoute>
+          }
         />
 
         <Route
           path="/admin/leaderboard"
           element={
-            <Leaderboard
-              role="admin"
-            />
+            <ProtectedRoute allowedRole="admin">
+              <Leaderboard role="admin" />
+            </ProtectedRoute>
           }
         />
 
         <Route
           path="/admin/settings"
           element={
-            <AccountSettings
-              role="admin"
-            />
+            <ProtectedRoute allowedRole="admin">
+              <AccountSettings role="admin" />
+            </ProtectedRoute>
           }
         />
 
         <Route
           path="/admin/*"
           element={
-            <ComingSoon
-              role="admin"
-            />
+            <ProtectedRoute allowedRole="admin">
+              <ComingSoon role="admin" />
+            </ProtectedRoute>
           }
         />
 
@@ -279,22 +317,38 @@ export default function App() {
 
         <Route
           path="/trainer"
-          element={<TrainerDashboard />}
+          element={
+            <ProtectedRoute allowedRole="trainer">
+              <TrainerDashboard />
+            </ProtectedRoute>
+          }
         />
 
         <Route
           path="/trainer/courses"
-          element={<TrainerDashboard />}
+          element={
+            <ProtectedRoute allowedRole="trainer">
+              <TrainerDashboard />
+            </ProtectedRoute>
+          }
         />
 
         <Route
           path="/trainer/course/:courseId"
-          element={<TrainerCourseDetail />}
+          element={
+            <ProtectedRoute allowedRole="trainer">
+              <TrainerCourseDetail />
+            </ProtectedRoute>
+          }
         />
 
         <Route
           path="/trainer/create-course"
-          element={<CreateCourse />}
+          element={
+            <ProtectedRoute allowedRole="trainer">
+              <CreateCourse />
+            </ProtectedRoute>
+          }
         />
 
 
@@ -304,17 +358,29 @@ export default function App() {
 
         <Route
           path="/trainer/coding-exams"
-          element={<TrainerCodingExams />}
+          element={
+            <ProtectedRoute allowedRole="trainer">
+              <TrainerCodingExams />
+            </ProtectedRoute>
+          }
         />
 
         <Route
           path="/trainer/coding-exams/:examId/questions"
-          element={<TrainerCodingQuestions />}
+          element={
+            <ProtectedRoute allowedRole="trainer">
+              <TrainerCodingQuestions />
+            </ProtectedRoute>
+          }
         />
 
         <Route
           path="/trainer/coding-exams/:examId/results"
-          element={<TrainerCodingExamResults />}
+          element={
+            <ProtectedRoute allowedRole="trainer">
+              <TrainerCodingExamResults />
+            </ProtectedRoute>
+          }
         />
 
 
@@ -325,9 +391,9 @@ export default function App() {
         <Route
           path="/trainer/leaderboard"
           element={
-            <Leaderboard
-              role="trainer"
-            />
+            <ProtectedRoute allowedRole="trainer">
+              <Leaderboard role="trainer" />
+            </ProtectedRoute>
           }
         />
 
@@ -339,9 +405,9 @@ export default function App() {
         <Route
           path="/trainer/settings"
           element={
-            <AccountSettings
-              role="trainer"
-            />
+            <ProtectedRoute allowedRole="trainer">
+              <AccountSettings role="trainer" />
+            </ProtectedRoute>
           }
         />
 
@@ -378,9 +444,9 @@ export default function App() {
         <Route
           path="/trainer/*"
           element={
-            <ComingSoon
-              role="trainer"
-            />
+            <ProtectedRoute allowedRole="trainer">
+              <ComingSoon role="trainer" />
+            </ProtectedRoute>
           }
         />
 
@@ -391,60 +457,92 @@ export default function App() {
 
         <Route
           path="/learner"
-          element={<LearnerDashboard />}
+          element={
+            <ProtectedRoute allowedRole="learner">
+              <LearnerDashboard />
+            </ProtectedRoute>
+          }
         />
 
         <Route
           path="/learner/progress"
-          element={<Progress />}
+          element={
+            <ProtectedRoute allowedRole="learner">
+              <Progress />
+            </ProtectedRoute>
+          }
         />
 
         <Route
           path="/learner/certificates"
-          element={<LearnerCertificates />}
+          element={
+            <ProtectedRoute allowedRole="learner">
+              <LearnerCertificates />
+            </ProtectedRoute>
+          }
         />
 
         <Route
           path="/learner/my-learning"
-          element={<MyLearning />}
+          element={
+            <ProtectedRoute allowedRole="learner">
+              <MyLearning />
+            </ProtectedRoute>
+          }
         />
 
         <Route
           path="/learner/explore"
-          element={<LearnerExplore />}
+          element={
+            <ProtectedRoute allowedRole="learner">
+              <LearnerExplore />
+            </ProtectedRoute>
+          }
         />
 
         <Route
           path="/learner/leaderboard"
           element={
-            <Leaderboard
-              role="learner"
-            />
+            <ProtectedRoute allowedRole="learner">
+              <Leaderboard role="learner" />
+            </ProtectedRoute>
           }
         />
 
         <Route
           path="/learner/course/:courseId/lesson/:lessonId"
-          element={<LessonPlayer />}
+          element={
+            <ProtectedRoute allowedRole="learner">
+              <LessonPlayer />
+            </ProtectedRoute>
+          }
         />
 
         <Route
           path="/learner/course/:courseId"
-          element={<CourseDetail />}
+          element={
+            <ProtectedRoute allowedRole="learner">
+              <CourseDetail />
+            </ProtectedRoute>
+          }
         />
 
         <Route
           path="/learner/settings"
           element={
-            <AccountSettings
-              role="learner"
-            />
+            <ProtectedRoute allowedRole="learner">
+              <AccountSettings role="learner" />
+            </ProtectedRoute>
           }
         />
 
         <Route
           path="/learner/calendar"
-          element={<LearnerCalendar />}
+          element={
+            <ProtectedRoute allowedRole="learner">
+              <LearnerCalendar />
+            </ProtectedRoute>
+          }
         />
 
 
@@ -454,7 +552,11 @@ export default function App() {
 
         <Route
           path="/exam-history"
-          element={<LearnerExamHistory />}
+          element={
+            <ProtectedRoute allowedRole="learner">
+              <LearnerExamHistory />
+            </ProtectedRoute>
+          }
         />
 
 
@@ -521,8 +623,8 @@ export default function App() {
           }
         />
 
-      </Routes>
-
+        </Routes>
+      </NotificationProvider>
     </AuthProvider>
   )
 }

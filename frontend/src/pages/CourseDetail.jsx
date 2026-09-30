@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import DashboardLayout from '../components/DashboardLayout'
 import { apiRequest } from '../services/api'
+import { useNotification } from '../context/NotificationContext'
 
 const WISHLIST_KEY = 'devsprint_wishlist'
 
@@ -23,7 +24,7 @@ export default function CourseDetail() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [starting, setStarting] = useState(false)
-
+const { showNotification } = useNotification()
   // =========================================================
   // LOAD COURSE
   // =========================================================
@@ -90,7 +91,7 @@ export default function CourseDetail() {
     } catch (err) {
       console.error('Wishlist error:', err)
 
-      alert(
+      showNotification(
         err.message ||
         'Unable to update wishlist'
       )
@@ -146,9 +147,9 @@ export default function CourseDetail() {
         err
       )
 
-      alert(
+      showNotification(
         err.message ||
-        'Unable to enroll in this course'
+        'Unable to update wishlist'
       )
 
     } finally {

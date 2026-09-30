@@ -17,11 +17,14 @@ import {
   fetchAuthenticatedBlob
 } from '../services/api'
 
+import { useNotification } from '../context/NotificationContext'
+
 
 export default function LessonPlayer() {
   const { courseId, lessonId } = useParams()
   const navigate = useNavigate()
 
+  const { showNotification } = useNotification()
   const [course, setCourse] = useState(null)
   const [modules, setModules] = useState([])
   const [lesson, setLesson] = useState(null)
@@ -50,16 +53,12 @@ export default function LessonPlayer() {
       return ''
     }
 
-    if (fileUrl.startsWith('http://localhost:5001')) {
-      return fileUrl.replace(
-        'http://localhost:5001',
-        ''
-      )
-    }
+    const apiBaseUrl =
+      import.meta.env.VITE_API_BASE_URL
 
-    if (fileUrl.startsWith('https://localhost:5001')) {
+    if (fileUrl.startsWith(apiBaseUrl)) {
       return fileUrl.replace(
-        'https://localhost:5001',
+        apiBaseUrl,
         ''
       )
     }
@@ -365,7 +364,7 @@ export default function LessonPlayer() {
         err
       )
 
-      alert(
+      showNotification(
         err.message ||
         'Unable to open PDF'
       )
@@ -455,7 +454,7 @@ export default function LessonPlayer() {
           err
         )
 
-        alert(
+        showNotification(
           err.message ||
           'Unable to save progress'
         )

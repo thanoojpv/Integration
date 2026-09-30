@@ -1189,7 +1189,7 @@ export default function TrainerCodingExamResults() {
                                */
 
                               const imageUrl =
-                                `http://localhost:5001${screenshot.url}`
+                                `${import.meta.env.VITE_API_BASE_URL}${screenshot.url}`
 
 
                               return (

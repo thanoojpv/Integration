@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import DashboardLayout from '../components/DashboardLayout'
 import { apiRequest } from '../services/api'
+import { useNotification } from '../context/NotificationContext'
 
 export default function AdminUsers() {
 
@@ -11,6 +12,7 @@ export default function AdminUsers() {
   const [roleFilter, setRoleFilter] = useState('all')
   const [statusFilter, setStatusFilter] = useState('all')
   const [busyId, setBusyId] = useState(null)
+  const { showNotification } = useNotification()
 
   async function loadUsers() {
 
@@ -81,7 +83,7 @@ export default function AdminUsers() {
         err
       )
 
-      alert(
+      showNotification(
         err.message ||
         'Unable to update status'
       )
@@ -124,9 +126,9 @@ export default function AdminUsers() {
         err
       )
 
-      alert(
+      showNotification(
         err.message ||
-        'Unable to delete user'
+        'Unable to update status'
       )
 
     } finally {

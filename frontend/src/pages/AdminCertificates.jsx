@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react'
 import DashboardLayout from '../components/DashboardLayout'
 
-const API_BASE = 'http://localhost:5001/api'
+const API_BASE =
+  `${import.meta.env.VITE_API_BASE_URL}/api`
 
 export default function AdminCertificates() {
   const [certificates, setCertificates] = useState([])

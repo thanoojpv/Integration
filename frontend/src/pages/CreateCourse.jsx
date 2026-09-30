@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import DashboardLayout from '../components/DashboardLayout'
 import { apiRequest } from '../services/api'
+import { useNotification } from '../context/NotificationContext'
 
 const STEPS = [
   'Basic Info',
@@ -12,6 +13,7 @@ const STEPS = [
 export default function CreateCourse() {
 
   const navigate = useNavigate()
+  const { showNotification } = useNotification()
 
   // =====================================================
   // STEP
@@ -338,8 +340,9 @@ export default function CreateCourse() {
         }
       )
 
-      alert(
-        'Course published successfully!'
+      showNotification(
+        'Course published successfully!',
+        'success'
       )
 
       navigate(

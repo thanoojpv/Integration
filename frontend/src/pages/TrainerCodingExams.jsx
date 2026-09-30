@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { apiRequest } from '../services/api'
 import './TrainerCodingExams.css'
-
+import { useNotification } from '../context/NotificationContext'
 
 // =========================================================
 // TRAINER CODING EXAMS
@@ -11,6 +11,7 @@ import './TrainerCodingExams.css'
 export default function TrainerCodingExams() {
 
   const navigate = useNavigate()
+  const { showNotification } = useNotification()
 
   // -------------------------------------------------------
   // DATA
@@ -327,7 +328,7 @@ export default function TrainerCodingExams() {
 
       console.error(err)
 
-      alert(
+      showNotification(
         err.message ||
         'Failed to create coding exam.'
       )
@@ -418,7 +419,7 @@ export default function TrainerCodingExams() {
 
       console.error(err)
 
-      alert(
+      showNotification(
         err.message ||
         'Failed to update coding exam.'
       )
@@ -466,7 +467,7 @@ export default function TrainerCodingExams() {
 
       console.error(err)
 
-      alert(
+      showNotification(
         err.message ||
         'Failed to delete coding exam.'
       )
@@ -544,7 +545,7 @@ export default function TrainerCodingExams() {
 
       console.error(err)
 
-      alert(
+      showNotification(
         err.message ||
         'Failed to update exam status.'
       )

@@ -109,6 +109,108 @@ export default function AdminCatalog() {
     )
   }
 
+  async function handleToggleStatus(course) {
+
+  const nextStatus = !course.published
+
+  try {
+
+    setError('')
+
+    await apiRequest(
+      `/api/admin/courses/${encodeURIComponent(course.id)}/status`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({
+          published: nextStatus
+        })
+      }
+    )
+
+    setCourses((previous) =>
+      previous.map((item) =>
+        item.id === course.id
+          ? {
+              ...item,
+              published: nextStatus
+            }
+          : item
+      )
+    )
+
+  } catch (err) {
+
+    console.error(
+      'Course status update error:',
+      err
+    )
+
+    setError(
+      err.message ||
+      'Unable to update course status'
+    )
+  }
+}
+
+
+async function handleDeleteCourse(course) {
+
+  const confirmed =
+    window.confirm(
+      `Delete "${course.title}" permanently?\n\n` +
+      `This will delete the course and its modules, lessons, ` +
+      `quizzes, assignments, enrollments, certificates, ` +
+      `coding exam data, learning-time records and uploaded files.\n\n` +
+      `This action cannot be undone.`
+    )
+
+  if (!confirmed) {
+    return
+  }
+
+  try {
+
+    setError('')
+
+    await apiRequest(
+      `/api/admin/courses/${encodeURIComponent(course.id)}`,
+      {
+        method: 'DELETE'
+      }
+    )
+
+    setCourses((previous) =>
+      previous.filter(
+        (item) =>
+          item.id !== course.id
+      )
+    )
+
+    setExpanded((previous) => {
+
+      const updated = {
+        ...previous
+      }
+
+      delete updated[course.id]
+
+      return updated
+    })
+
+  } catch (err) {
+
+    console.error(
+      'Course deletion error:',
+      err
+    )
+
+    setError(
+      err.message ||
+      'Unable to delete course'
+    )
+  }
+}
+
   return (
 
     <DashboardLayout role="admin">
@@ -308,27 +410,70 @@ export default function AdminCatalog() {
                           <strong>
                             Status:
                           </strong>{' '}
-                          {course.published
-                            ? 'Published'
-                            : 'Draft'}
+                          <span
+                            style={{
+                              fontWeight: 600,
+                              color: course.published
+                                ? '#15803d'
+                                : '#b45309'
+                            }}
+                          >
+                            {course.published
+                              ? 'Active'
+                              : 'Inactive'}
+                          </span>
                         </span>
 
                       </div>
 
                     </div>
 
-                    <button
-                      className="btn btn-primary"
-                      onClick={() =>
-                        toggleCourse(
-                          course.id
-                        )
-                      }
+                    <div
+                      style={{
+                        display: 'flex',
+                        gap: 8,
+                        flexWrap: 'wrap',
+                        alignItems: 'center'
+                      }}
                     >
-                      {isOpen
-                        ? 'Hide Content'
-                        : 'View Content'}
-                    </button>
+
+                      <button
+                        className="btn btn-primary"
+                        onClick={() =>
+                          toggleCourse(course.id)
+                        }
+                      >
+                        {isOpen
+                          ? 'Hide Content'
+                          : 'View Content'}
+                      </button>
+
+                      <button
+                        className="btn btn-outline"
+                        onClick={() =>
+                          handleToggleStatus(course)
+                        }
+                      >
+                        {course.published
+                          ? 'Deactivate'
+                          : 'Activate'}
+                      </button>
+
+                      <button
+                        className="btn"
+                        onClick={() =>
+                          handleDeleteCourse(course)
+                        }
+                        style={{
+                          border: '1px solid #dc2626',
+                          color: '#dc2626',
+                          background: 'transparent'
+                        }}
+                      >
+                        Delete
+                      </button>
+
+                    </div>
 
                   </div>
 

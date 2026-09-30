@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import { useNotification } from '../context/NotificationContext'
 
 export default function Login() {
   const [email, setEmail] = useState('')
@@ -9,6 +10,7 @@ export default function Login() {
 
   const navigate = useNavigate()
   const { login } = useAuth()
+  const { showNotification } = useNotification()
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -17,8 +19,12 @@ export default function Login() {
       const result = await login(email, password)
 
       if (!result || !result.user) {
-        alert(result?.error || result?.message || 'Login failed')
-        return
+        showNotification(
+          result?.error ||
+          result?.message ||
+          'Login failed'
+        )       
+         return
       }
 
       console.log('Login successful:', result)
@@ -34,12 +40,13 @@ export default function Login() {
       } else if (userRole === 'admin') {
         navigate('/admin')
       } else {
-        alert('Invalid user role')
+        showNotification('Invalid user role')
       }
 
     } catch (error) {
       console.error('Login error:', error)
-      alert('Unable to connect to the backend')
+      showNotification('Unable to connect to the backend'
+)
     }
   }
 

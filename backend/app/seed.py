@@ -1,3 +1,4 @@
+import logging
 from datetime import date
 
 from . import db
@@ -19,6 +20,8 @@ from .models import (
     Invoice,
 )
 from .auth import create_password_hash
+
+logger = logging.getLogger(__name__)
 
 
 def seed_database():
@@ -1189,5 +1192,5 @@ def seed_database():
 
     db.session.commit()
 
-    print("Database seed completed successfully.")
-    print("10 courses, modules and lessons are ready.")
+    logger.info("Database seed completed successfully.")
+    logger.info("10 courses, modules and lessons are ready.")

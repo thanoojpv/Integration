@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from . import db
 
 
@@ -48,10 +48,20 @@ class User(db.Model):
         nullable=False,
         default="active"
     )
+    failed_login_attempts = db.Column(
+        db.Integer,
+        nullable=False,
+        default=0
+    )
+
+    locked_until = db.Column(
+        db.DateTime,
+        nullable=True
+    )
 
     created_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow
+        default=lambda: datetime.now(timezone.utc)
     )
 
 
@@ -226,7 +236,7 @@ class Course(db.Model):
 
     created_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow
+        default=lambda: datetime.now(timezone.utc)
     )
 
     trainer = db.relationship(
@@ -379,7 +389,7 @@ class LessonResource(db.Model):
 
     uploaded_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow
+        default=lambda: datetime.now(timezone.utc)
     )
 
 
@@ -419,7 +429,7 @@ class Enrollment(db.Model):
 
     enrolled_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow
+        default=lambda: datetime.now(timezone.utc)
     )
 
     __table_args__ = (
@@ -462,8 +472,8 @@ class LessonProgress(db.Model):
 
     updated_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc)
     )
 
     __table_args__ = (
@@ -515,7 +525,7 @@ class Assignment(db.Model):
 
     created_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow
+        default=lambda: datetime.now(timezone.utc)
     )
 
 
@@ -595,9 +605,21 @@ class Quiz(db.Model):
         default=0
     )
 
+    max_attempts = db.Column(
+        db.Integer,
+        default=1,
+        nullable=False
+    )
+
+    duration_minutes = db.Column(
+        db.Integer,
+        default=30,
+        nullable=False
+    )
+
     created_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow
+        default=lambda: datetime.now(timezone.utc)
     )
 
 class QuizAnswer(db.Model):
@@ -735,11 +757,16 @@ class QuizAttempt(db.Model):
         default=0
     )
 
-    attempted_at = db.Column(
+    started_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False
     )
 
+    attempted_at = db.Column(
+        db.DateTime,
+        nullable=True
+    )
 
 # =========================================================
 # CERTIFICATE
@@ -784,7 +811,7 @@ class Certificate(db.Model):
 
     created_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow
+        default=lambda: datetime.now(timezone.utc)
     )
 
     status = db.Column(
@@ -874,7 +901,7 @@ class Payment(db.Model):
 
     payment_date = db.Column(
         db.DateTime,
-        default=datetime.utcnow
+        default=lambda: datetime.now(timezone.utc)
     )
 
     payment_method = db.Column(
@@ -918,7 +945,7 @@ class Invoice(db.Model):
 
     invoice_date = db.Column(
         db.DateTime,
-        default=datetime.utcnow
+        default=lambda: datetime.now(timezone.utc)
     )
 
     status = db.Column(
@@ -958,7 +985,7 @@ class Discussion(db.Model):
 
     created_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow
+        default=lambda: datetime.now(timezone.utc)
     )
 
 
@@ -988,7 +1015,7 @@ class Wishlist(db.Model):
 
     created_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow
+        default=lambda: datetime.now(timezone.utc)
     )
 
     __table_args__ = (
@@ -1035,7 +1062,7 @@ class CourseDocument(db.Model):
 
     uploaded_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow
+        default=lambda: datetime.now(timezone.utc)
     )
 
     course = db.relationship(
@@ -1077,13 +1104,13 @@ class CodingExam(db.Model):
 
     created_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow
+        default=lambda: datetime.now(timezone.utc)
     )
 
     updated_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc)
     )
 
 
@@ -1150,13 +1177,13 @@ class CodingQuestion(db.Model):
 
     created_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow
+        default=lambda: datetime.now(timezone.utc)
     )
 
     updated_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc)
     )
 
 
@@ -1252,7 +1279,7 @@ class CodingSubmission(db.Model):
 
     submitted_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow
+        default=lambda: datetime.now(timezone.utc)
     )
 
 # ============================================================
@@ -1281,7 +1308,7 @@ class CodingExamSession(db.Model):
 
     started_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
         nullable=False
     )
 
@@ -1313,7 +1340,7 @@ class CodingExamSession(db.Model):
 
     created_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow
+        default=lambda: datetime.now(timezone.utc)
     )
 
 
@@ -1343,7 +1370,7 @@ class CodingExamMonitoringEvent(db.Model):
 
     event_time = db.Column(
         db.DateTime,
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
         nullable=False
     )
 
@@ -1374,6 +1401,50 @@ class CodingExamScreenshot(db.Model):
 
     captured_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False
+    )
+
+# ============================================================
+# LEARNING TIME
+# ============================================================
+
+class LearningTime(db.Model):
+    __tablename__ = "learning_time"
+
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
+
+    learner_id = db.Column(
+        db.Integer,
+        db.ForeignKey("learner.id"),
+        nullable=False,
+        index=True
+    )
+
+    course_id = db.Column(
+        db.String(80),
+        db.ForeignKey("course.id"),
+        nullable=True,
+        index=True
+    )
+
+    lesson_id = db.Column(
+        db.String(80),
+        db.ForeignKey("lesson.id"),
+        nullable=True,
+        index=True
+    )
+
+    duration_seconds = db.Column(
+        db.Integer,
+        nullable=False
+    )
+
+    created_at = db.Column(
+        db.DateTime,
+        default=lambda: datetime.now(timezone.utc),
         nullable=False
     )

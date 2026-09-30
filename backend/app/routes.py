@@ -7,19 +7,22 @@ from flask import (
 )
 
 import os
+import shutil
+import secrets
 import random
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from werkzeug.utils import secure_filename
 
-from . import db
+from . import db ,limiter
 
 from .models import (
     User,
     Trainer,
     Learner,
+    LearningTime,
     Batch,
     Course,
     CourseDocument,
@@ -548,7 +551,7 @@ def health():
         "status": "ok",
         "service": "Devsprint LMS Backend",
         "timestamp": (
-            datetime.utcnow().isoformat()
+            datetime.now(timezone.utc).isoformat()
             + "Z"
         ),
     })
@@ -590,10 +593,10 @@ def register():
                 "Name, email and password are required"
         }), 400
 
-    if len(password) < 6:
+    if len(password) < 8:
         return jsonify({
             "error":
-                "Password must be at least 6 characters"
+                "Password must be at least 8 characters"
         }), 400
 
     if User.query.filter_by(
@@ -649,6 +652,7 @@ def register():
 # =========================================================
 
 @api.post("/auth/login")
+@limiter.limit("10 per minute")
 def login():
     data = (
         request.get_json(
@@ -761,19 +765,44 @@ def admin_dashboard(user):
 @api.get("/admin/users")
 @role_required("admin")
 def admin_users(user):
-    users = (
+    try:
+        page = max(int(request.args.get("page", 1)), 1)
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+            max(int(request.args.get("limit", 20)), 1),
+            100,
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
         User.query
         .order_by(
             User.created_at.desc()
         )
-        .all()
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False,
+        )
     )
 
     return jsonify({
         "users": [
             user_json(item)
-            for item in users
-        ]
+            for item in pagination.items
+        ],
+        "pagination": {
+            "page": pagination.page,
+            "limit": pagination.per_page,
+            "total": pagination.total,
+            "pages": pagination.pages,
+            "has_next": pagination.has_next,
+            "has_previous": pagination.has_prev,
+        },
     })
 
 
@@ -873,11 +902,11 @@ def admin_create_trainer(user):
     if (
         not name
         or not email
-        or len(password) < 6
+        or len(password) < 8
     ):
         return jsonify({
             "error":
-                "Name, email and password of at least 6 characters are required"
+                "Name, email and password of at least 8 characters are required"
         }), 400
 
     if User.query.filter_by(
@@ -951,13 +980,42 @@ def admin_create_trainer(user):
 @api.get("/admin/trainers")
 @role_required("admin")
 def admin_trainers(user):
-    trainers = Trainer.query.all()
+    try:
+        page = max(int(request.args.get("page", 1)), 1)
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+            max(int(request.args.get("limit", 20)), 1),
+            100,
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
+        Trainer.query
+        .order_by(Trainer.id.asc())
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False,
+        )
+    )
 
     return jsonify({
         "trainers": [
             trainer_json(item)
-            for item in trainers
-        ]
+            for item in pagination.items
+        ],
+        "pagination": {
+            "page": pagination.page,
+            "limit": pagination.per_page,
+            "total": pagination.total,
+            "pages": pagination.pages,
+            "has_next": pagination.has_next,
+            "has_previous": pagination.has_prev,
+        },
     })
 
 
@@ -1092,11 +1150,11 @@ def admin_create_learner(user):
     if (
         not name
         or not email
-        or len(password) < 6
+        or len(password) < 8
     ):
         return jsonify({
             "error":
-                "Name, email and password of at least 6 characters are required"
+                "Name, email and password of at least 8 characters are required"
         }), 400
 
     if User.query.filter_by(
@@ -1155,13 +1213,42 @@ def admin_create_learner(user):
 @api.get("/admin/learners")
 @role_required("admin")
 def admin_learners(user):
-    learners = Learner.query.all()
+    try:
+        page = max(int(request.args.get("page", 1)), 1)
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+            max(int(request.args.get("limit", 20)), 1),
+            100,
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
+        Learner.query
+        .order_by(Learner.id.asc())
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False,
+        )
+    )
 
     return jsonify({
         "learners": [
             learner_json(item)
-            for item in learners
-        ]
+            for item in pagination.items
+        ],
+        "pagination": {
+            "page": pagination.page,
+            "limit": pagination.per_page,
+            "total": pagination.total,
+            "pages": pagination.pages,
+            "has_next": pagination.has_next,
+            "has_previous": pagination.has_prev,
+        },
     })
 
 
@@ -1221,20 +1308,586 @@ def admin_update_learner(
 @api.get("/admin/courses")
 @role_required("admin")
 def admin_courses(user):
-    courses = (
+    try:
+        page = max(
+            int(request.args.get("page", 1)),
+            1
+        )
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+            max(
+                int(request.args.get("limit", 20)),
+                1
+            ),
+            100
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
         Course.query
         .order_by(
             Course.id.desc()
         )
-        .all()
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False
+        )
     )
 
+    courses = pagination.items
+    
+
     return jsonify({
-        "courses": [
-            course_json(course)
-            for course in courses
-        ]
+    "courses": [
+        course_json(course)
+        for course in courses
+    ],
+    "pagination": {
+        "page": pagination.page,
+        "limit": pagination.per_page,
+        "total": pagination.total,
+        "pages": pagination.pages,
+        "has_next": pagination.has_next,
+        "has_previous": pagination.has_prev
+    }
+})
+
+# =========================================================
+# ADMIN - ACTIVATE / DEACTIVATE COURSE
+# =========================================================
+
+@api.patch("/admin/courses/<string:course_id>/status")
+@role_required("admin")
+def admin_update_course_status(
+    user,
+    course_id,
+):
+    course = Course.query.get_or_404(
+        course_id
+    )
+
+    data = (
+        request.get_json(
+            silent=True
+        )
+        or {}
+    )
+
+    if "published" not in data:
+        return jsonify({
+            "error":
+                "published is required"
+        }), 400
+
+    published = data["published"]
+
+    if not isinstance(
+        published,
+        bool
+    ):
+        return jsonify({
+            "error":
+                "published must be true or false"
+        }), 400
+
+    course.published = published
+
+    db.session.commit()
+
+    return jsonify({
+        "message":
+            (
+                "Course activated successfully"
+                if published
+                else
+                "Course deactivated successfully"
+            ),
+        "course":
+            course_json(course),
     })
+
+# =========================================================
+# ADMIN - DELETE ENTIRE COURSE
+# =========================================================
+
+@api.delete("/admin/courses/<string:course_id>")
+@role_required("admin")
+def admin_delete_course(
+    user,
+    course_id,
+):
+    course = Course.query.get_or_404(
+        course_id
+    )
+
+    try:
+        # -------------------------------------------------
+        # Find all modules and lessons
+        # -------------------------------------------------
+
+        modules = Module.query.filter_by(
+            course_id=course.id
+        ).all()
+
+        lesson_ids = []
+
+        for module in modules:
+
+            lessons = Lesson.query.filter_by(
+                module_id=module.id
+            ).all()
+
+            lesson_ids.extend(
+                lesson.id
+                for lesson in lessons
+            )
+
+        # -------------------------------------------------
+        # Delete lesson-level records
+        # -------------------------------------------------
+
+        if lesson_ids:
+
+            LessonProgress.query.filter(
+                LessonProgress.lesson_id.in_(
+                    lesson_ids
+                )
+            ).delete(
+                synchronize_session=False
+            )
+
+            Discussion.query.filter(
+                Discussion.lesson_id.in_(
+                    lesson_ids
+                )
+            ).delete(
+                synchronize_session=False
+            )
+
+            lesson_resources = (
+                LessonResource.query
+                .filter(
+                    LessonResource.lesson_id.in_(
+                        lesson_ids
+                    )
+                )
+                .all()
+            )
+
+            # Delete physical lesson files.
+            for resource in lesson_resources:
+
+                if resource.file_path:
+                    try:
+                        if os.path.isfile(
+                            resource.file_path
+                        ):
+                            os.remove(
+                                resource.file_path
+                            )
+                    except OSError:
+                        current_app.logger.warning(
+                            "Unable to delete lesson resource file: %s",
+                            resource.file_path,
+                        )
+
+            LessonResource.query.filter(
+                LessonResource.lesson_id.in_(
+                    lesson_ids
+                )
+            ).delete(
+                synchronize_session=False
+            )
+
+        # -------------------------------------------------
+        # Delete assignment submissions
+        # -------------------------------------------------
+
+        assignments = Assignment.query.filter_by(
+            course_id=course.id
+        ).all()
+
+        assignment_ids = [
+            assignment.id
+            for assignment in assignments
+        ]
+
+        if assignment_ids:
+
+            AssignmentSubmission.query.filter(
+                AssignmentSubmission.assignment_id.in_(
+                    assignment_ids
+                )
+            ).delete(
+                synchronize_session=False
+            )
+
+            Assignment.query.filter(
+                Assignment.id.in_(
+                    assignment_ids
+                )
+            ).delete(
+                synchronize_session=False
+            )
+
+        # -------------------------------------------------
+        # Delete quiz answers / attempts / questions
+        # -------------------------------------------------
+
+        quizzes = Quiz.query.filter_by(
+            course_id=course.id
+        ).all()
+
+        quiz_ids = [
+            quiz.id
+            for quiz in quizzes
+        ]
+
+        if quiz_ids:
+
+            attempts = QuizAttempt.query.filter(
+                QuizAttempt.quiz_id.in_(
+                    quiz_ids
+                )
+            ).all()
+
+            attempt_ids = [
+                attempt.id
+                for attempt in attempts
+            ]
+
+            if attempt_ids:
+
+                QuizAnswer.query.filter(
+                    QuizAnswer.attempt_id.in_(
+                        attempt_ids
+                    )
+                ).delete(
+                    synchronize_session=False
+                )
+
+                QuizAttempt.query.filter(
+                    QuizAttempt.id.in_(
+                        attempt_ids
+                    )
+                ).delete(
+                    synchronize_session=False
+                )
+
+            Question.query.filter(
+                Question.quiz_id.in_(
+                    quiz_ids
+                )
+            ).delete(
+                synchronize_session=False
+            )
+
+            Quiz.query.filter(
+                Quiz.id.in_(
+                    quiz_ids
+                )
+            ).delete(
+                synchronize_session=False
+            )
+
+        # -------------------------------------------------
+        # Delete coding exams and their children
+        # -------------------------------------------------
+
+        coding_exams = CodingExam.query.filter_by(
+            course_id=course.id
+        ).all()
+
+        coding_exam_ids = [
+            exam.id
+            for exam in coding_exams
+        ]
+
+        if coding_exam_ids:
+
+            coding_questions = (
+                CodingQuestion.query
+                .filter(
+                    CodingQuestion.exam_id.in_(
+                        coding_exam_ids
+                    )
+                )
+                .all()
+            )
+
+            coding_question_ids = [
+                question.id
+                for question in coding_questions
+            ]
+
+            # Test cases depend on coding questions.
+            if coding_question_ids:
+
+                CodingTestCase.query.filter(
+                    CodingTestCase.question_id.in_(
+                        coding_question_ids
+                    )
+                ).delete(
+                    synchronize_session=False
+                )
+
+            # Submissions depend on both exams
+            # and questions.
+            CodingSubmission.query.filter(
+                CodingSubmission.exam_id.in_(
+                    coding_exam_ids
+                )
+            ).delete(
+                synchronize_session=False
+            )
+
+            CodingQuestion.query.filter(
+                CodingQuestion.exam_id.in_(
+                    coding_exam_ids
+                )
+            ).delete(
+                synchronize_session=False
+            )
+
+            # Sessions depend on coding exams.
+            sessions = (
+                CodingExamSession.query
+                .filter(
+                    CodingExamSession.exam_id.in_(
+                        coding_exam_ids
+                    )
+                )
+                .all()
+            )
+
+            session_ids = [
+                session.id
+                for session in sessions
+            ]
+
+            if session_ids:
+
+                CodingExamMonitoringEvent.query.filter(
+                    CodingExamMonitoringEvent.session_id.in_(
+                        session_ids
+                    )
+                ).delete(
+                    synchronize_session=False
+                )
+
+                screenshots = (
+                    CodingExamScreenshot.query
+                    .filter(
+                        CodingExamScreenshot.session_id.in_(
+                            session_ids
+                        )
+                    )
+                    .all()
+                )
+
+                for screenshot in screenshots:
+
+                    if screenshot.file_path:
+                        try:
+                            if os.path.isfile(
+                                screenshot.file_path
+                            ):
+                                os.remove(
+                                    screenshot.file_path
+                                )
+                        except OSError:
+                            current_app.logger.warning(
+                                "Unable to delete coding screenshot: %s",
+                                screenshot.file_path,
+                            )
+
+                CodingExamScreenshot.query.filter(
+                    CodingExamScreenshot.session_id.in_(
+                        session_ids
+                    )
+                ).delete(
+                    synchronize_session=False
+                )
+
+                CodingExamSession.query.filter(
+                    CodingExamSession.id.in_(
+                        session_ids
+                    )
+                ).delete(
+                    synchronize_session=False
+                )
+
+            CodingExam.query.filter(
+                CodingExam.id.in_(
+                    coding_exam_ids
+                )
+            ).delete(
+                synchronize_session=False
+            )
+
+        # -------------------------------------------------
+        # Delete course-level records
+        # -------------------------------------------------
+
+        Enrollment.query.filter_by(
+            course_id=course.id
+        ).delete(
+            synchronize_session=False
+        )
+
+        Certificate.query.filter_by(
+            course_id=course.id
+        ).delete(
+            synchronize_session=False
+        )
+
+        Wishlist.query.filter_by(
+            course_id=course.id
+        ).delete(
+            synchronize_session=False
+        )
+
+        # Delete learning-time records linked directly to the course
+        LearningTime.query.filter_by(
+            course_id=course.id
+        ).delete(
+            synchronize_session=False
+        )
+
+        # Also delete learning-time records linked through
+        # lessons belonging to this course.
+        if lesson_ids:
+            LearningTime.query.filter(
+                LearningTime.lesson_id.in_(lesson_ids)
+            ).delete(
+                synchronize_session=False
+            )
+
+        # -------------------------------------------------
+        # Delete course documents from database
+        # and filesystem
+        # -------------------------------------------------
+
+        documents = CourseDocument.query.filter_by(
+            course_id=course.id
+        ).all()
+
+        for document in documents:
+
+            if document.file_path:
+                try:
+                    if os.path.isfile(
+                        document.file_path
+                    ):
+                        os.remove(
+                            document.file_path
+                        )
+                except OSError:
+                    current_app.logger.warning(
+                        "Unable to delete course document: %s",
+                        document.file_path,
+                    )
+
+        CourseDocument.query.filter_by(
+            course_id=course.id
+        ).delete(
+            synchronize_session=False
+        )
+
+        # -------------------------------------------------
+        # Delete physical course folders
+        # -------------------------------------------------
+
+        course_document_path = (
+            os.path.join(
+                COURSE_DOCUMENT_ROOT,
+                secure_filename(
+                    str(course.id)
+                ),
+            )
+        )
+
+        if os.path.isdir(
+            course_document_path
+        ):
+            shutil.rmtree(
+                course_document_path,
+                ignore_errors=True
+            )
+
+        for lesson_id in lesson_ids:
+
+            for root in (
+                VIDEO_UPLOAD_ROOT,
+                PDF_UPLOAD_ROOT,
+            ):
+
+                lesson_folder = os.path.join(
+                    root,
+                    secure_filename(
+                        str(lesson_id)
+                    ),
+                )
+
+                if os.path.isdir(
+                    lesson_folder
+                ):
+                    shutil.rmtree(
+                        lesson_folder,
+                        ignore_errors=True
+                    )
+
+        # -------------------------------------------------
+        # Delete lessons and modules
+        # -------------------------------------------------
+
+        if lesson_ids:
+
+            Lesson.query.filter(
+                Lesson.id.in_(
+                    lesson_ids
+                )
+            ).delete(
+                synchronize_session=False
+            )
+
+        Module.query.filter_by(
+            course_id=course.id
+        ).delete(
+            synchronize_session=False
+        )
+
+        # -------------------------------------------------
+        # Finally delete the course itself
+        # -------------------------------------------------
+
+        db.session.delete(course)
+
+        db.session.commit()
+
+        return jsonify({
+            "message":
+                "Course and all related data deleted successfully"
+        })
+
+    except Exception:
+        db.session.rollback()
+
+        current_app.logger.exception(
+            "Failed to delete course %s",
+            course_id
+        )
+
+        return jsonify({
+            "error":
+                "Unable to delete course"
+        }), 500
+    
 # =========================================================
 # PUBLIC / LEARNER - LIST PUBLISHED COURSES
 # =========================================================
@@ -1242,7 +1895,26 @@ def admin_courses(user):
 @api.get("/courses")
 @token_required
 def courses(user):
-    published_courses = (
+    try:
+        page = max(
+            int(request.args.get("page", 1)),
+            1
+        )
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+            max(
+                int(request.args.get("limit", 20)),
+                1
+            ),
+            100
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
         Course.query
         .filter_by(
             published=True
@@ -1250,8 +1922,14 @@ def courses(user):
         .order_by(
             Course.id.desc()
         )
-        .all()
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False
+        )
     )
+
+    published_courses = pagination.items
 
     learner = Learner.query.filter_by(
         user_id=user.id
@@ -1287,8 +1965,19 @@ def courses(user):
         )
 
     return jsonify({
-        "courses": result
-    })
+    "courses": [
+        course_json(course)
+        for course in published_courses
+    ],
+    "pagination": {
+        "page": pagination.page,
+        "limit": pagination.per_page,
+        "total": pagination.total,
+        "pages": pagination.pages,
+        "has_next": pagination.has_next,
+        "has_previous": pagination.has_prev
+    }
+})
 
 
 # =========================================================
@@ -1456,23 +2145,56 @@ def trainer_courses(user):
                 "Trainer profile not found"
         }), 404
 
-    courses = (
-        Course.query
-        .filter_by(
-            trainer_id=trainer.id
-        )
-        .order_by(
-            Course.created_at.desc()
-        )
-        .all()
+    try:
+        page = max(
+        int(request.args.get("page", 1)),
+        1
     )
+    except (TypeError, ValueError):
+            page = 1
+
+    try:
+            limit = min(
+                max(
+                    int(request.args.get("limit", 20)),
+                    1
+                ),
+                100
+            )
+    except (TypeError, ValueError):
+            limit = 20
+
+    pagination = (
+            Course.query
+            .filter_by(
+                trainer_id=trainer.id
+            )
+            .order_by(
+                Course.created_at.desc()
+            )
+            .paginate(
+                page=page,
+                per_page=limit,
+                error_out=False
+            )
+        )
+
+    courses = pagination.items
 
     return jsonify({
-        "courses": [
-            course_json(course)
-            for course in courses
-        ]
-    })
+    "courses": [
+        course_json(course)
+        for course in courses
+    ],
+    "pagination": {
+        "page": pagination.page,
+        "limit": pagination.per_page,
+        "total": pagination.total,
+        "pages": pagination.pages,
+        "has_next": pagination.has_next,
+        "has_previous": pagination.has_prev
+    }
+})
 
 
 # =========================================================
@@ -2173,7 +2895,26 @@ def my_learning(user):
                 "Learner profile not found"
         }), 404
 
-    enrollments = (
+    try:
+     page = max(
+        int(request.args.get("page", 1)),
+        1
+    )
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+        max(
+            int(request.args.get("limit", 20)),
+            1
+        ),
+        100
+    )
+    except (TypeError, ValueError):
+         limit = 20
+
+    pagination = (
         Enrollment.query
         .filter_by(
             learner_id=learner.id
@@ -2181,8 +2922,14 @@ def my_learning(user):
         .order_by(
             Enrollment.id.desc()
         )
-        .all()
-    )
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False
+        )
+)
+
+    enrollments = pagination.items
 
     result = []
 
@@ -2213,8 +2960,16 @@ def my_learning(user):
         })
 
     return jsonify({
-        "courses": result
-    })
+    "courses": result,
+    "pagination": {
+        "page": pagination.page,
+        "limit": pagination.per_page,
+        "total": pagination.total,
+        "pages": pagination.pages,
+        "has_next": pagination.has_next,
+        "has_previous": pagination.has_prev
+    }
+})
 
 
 # =========================================================
@@ -2234,7 +2989,26 @@ def get_wishlist(user):
                 "Learner profile not found"
         }), 404
 
-    items = (
+    try:
+        page = max(
+        int(request.args.get("page", 1)),
+        1
+    )
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+            max(
+                int(request.args.get("limit", 20)),
+                1
+            ),
+            100
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
         Wishlist.query
         .filter_by(
             learner_id=learner.id
@@ -2242,8 +3016,14 @@ def get_wishlist(user):
         .order_by(
             Wishlist.id.desc()
         )
-        .all()
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False
+        )
     )
+
+    items = pagination.items
 
     result = []
 
@@ -2258,8 +3038,16 @@ def get_wishlist(user):
             )
 
     return jsonify({
-        "wishlist": result
-    })
+    "wishlist": result,
+    "pagination": {
+        "page": pagination.page,
+        "limit": pagination.per_page,
+        "total": pagination.total,
+        "pages": pagination.pages,
+        "has_next": pagination.has_next,
+        "has_previous": pagination.has_prev
+    }
+})
 
 
 @api.put(
@@ -2442,17 +3230,142 @@ def update_lesson_progress(user, lesson_id):
             "error": "Learner profile not found"
         }), 404
 
-    lesson = Lesson.query.get(lesson_id)
+    lesson = db.session.get(
+        Lesson,
+        lesson_id
+    )
 
     if not lesson:
         return jsonify({
             "error": "Lesson not found"
         }), 404
 
-    data = request.get_json(silent=True) or {}
+    # --------------------------------------------------------
+    # Find the course through the lesson's module
+    # --------------------------------------------------------
+
+    module = db.session.get(
+        Module,
+        lesson.module_id
+    )
+
+    if not module:
+        return jsonify({
+            "error": "Module not found"
+        }), 404
+
+    course = db.session.get(
+        Course,
+        module.course_id
+    )
+
+    if not course:
+        return jsonify({
+            "error": "Course not found"
+        }), 404
+
+    # --------------------------------------------------------
+    # SECURITY: learner must be actively enrolled
+    # --------------------------------------------------------
+
+    enrollment = Enrollment.query.filter_by(
+        learner_id=learner.id,
+        course_id=course.id,
+        status="active"
+    ).first()
+
+    if not enrollment:
+        return jsonify({
+            "error": "You are not enrolled in this course"
+        }), 403
+
+        # --------------------------------------------------------
+    # QUIZ ATTEMPT / SERVER-SIDE TIMER
+    # --------------------------------------------------------
+
+    max_attempts = int(quiz.max_attempts or 1)
+
+    active_attempt = (
+        QuizAttempt.query
+        .filter_by(
+            quiz_id=quiz.id,
+            learner_id=learner.id,
+            attempted_at=None
+        )
+        .order_by(QuizAttempt.id.desc())
+        .first()
+    )
+
+    attempt_count = QuizAttempt.query.filter_by(
+        quiz_id=quiz.id,
+        learner_id=learner.id
+    ).count()
+
+    if not active_attempt:
+
+        if attempt_count >= max_attempts:
+            return jsonify({
+                "error": "Maximum quiz attempts reached",
+                "max_attempts": max_attempts,
+                "attempts_used": attempt_count
+            }), 403
+
+        active_attempt = QuizAttempt(
+            quiz_id=quiz.id,
+            learner_id=learner.id,
+            started_at=datetime.now(timezone.utc),
+            attempted_at=None,
+            score=0,
+            total=0
+        )
+
+        db.session.add(active_attempt)
+        db.session.commit()
+
+        attempt_count += 1
+
+    now = datetime.now(timezone.utc)
+
+    started_at = active_attempt.started_at
+
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(
+            tzinfo=timezone.utc
+        )
+
+    expires_at = (
+        started_at +
+        timedelta(
+            minutes=int(
+                quiz.duration_minutes or 30
+            )
+        )
+    )
+
+    if now >= expires_at:
+        return jsonify({
+            "error": "Quiz time limit exceeded",
+            "duration_minutes": int(
+                quiz.duration_minutes or 30
+            ),
+            "started_at": started_at.isoformat(),
+            "expires_at": expires_at.isoformat(),
+            "attempt_id": active_attempt.id
+        }), 403
+
+    # --------------------------------------------------------
+    # Update lesson progress
+    # --------------------------------------------------------
+
+    data = request.get_json(
+        silent=True
+    ) or {}
 
     completed = bool(
-        data.get("completed", False)
+        data.get(
+            "completed",
+            False
+        )
     )
 
     progress = LessonProgress.query.filter_by(
@@ -2466,112 +3379,121 @@ def update_lesson_progress(user, lesson_id):
             lesson_id=lesson_id,
             completed=completed
         )
+
         db.session.add(progress)
+
     else:
         progress.completed = completed
-
-    # --------------------------------------------------------
-    # Find the course through the lesson's module
-    # --------------------------------------------------------
-
-    module = Module.query.get(
-        lesson.module_id
-    )
-
-    course = None
-
-    if module:
-        course = Course.query.get(
-            module.course_id
-        )
 
     # --------------------------------------------------------
     # Recalculate course progress
     # --------------------------------------------------------
 
-    if course:
-        course_lessons = (
-            Lesson.query
-            .join(
-                Module,
-                Lesson.module_id == Module.id
-            )
+    course_lessons = (
+        Lesson.query
+        .join(
+            Module,
+            Lesson.module_id == Module.id
+        )
+        .filter(
+            Module.course_id == course.id
+        )
+        .all()
+    )
+
+    lesson_ids = [
+        item.id
+        for item in course_lessons
+    ]
+
+    if lesson_ids:
+        completed_count = (
+            LessonProgress.query
             .filter(
-                Module.course_id == course.id
+                LessonProgress.learner_id == learner.id,
+                LessonProgress.lesson_id.in_(lesson_ids),
+                LessonProgress.completed.is_(True)
             )
-            .all()
+            .count()
         )
 
-        lesson_ids = [
-            item.id
-            for item in course_lessons
-        ]
+        percentage = int(
+            (completed_count / len(lesson_ids)) * 100
+        )
 
-        if lesson_ids:
-            completed_count = (
-                LessonProgress.query
-                .filter(
-                    LessonProgress.learner_id == learner.id,
-                    LessonProgress.lesson_id.in_(lesson_ids),
-                    LessonProgress.completed.is_(True)
-                )
-                .count()
+    else:
+        percentage = 0
+
+    enrollment.progress = percentage
+
+    # --------------------------------------------------------
+    # Course completion
+    # --------------------------------------------------------
+
+    if percentage >= 100:
+        enrollment.status = "completed"
+
+        # ----------------------------------------------------
+        # Generate certificate automatically
+        # ----------------------------------------------------
+
+        existing_certificate = (
+            Certificate.query
+            .filter_by(
+                learner_id=learner.id,
+                course_id=course.id
+            )
+            .first()
+        )
+
+        if not existing_certificate:
+
+            now = datetime.now(
+                timezone.utc
             )
 
-            percentage = int(
-                (completed_count / len(lesson_ids)) * 100
+            certificate_id = f"CERT-{secrets.token_urlsafe(24)}"
+
+            certificate = Certificate(
+                certificate_id=certificate_id,
+                learner_id=learner.id,
+                course_id=course.id,
+                start_date=(
+                    enrollment.enrolled_at
+                    or now
+                ),
+                end_date=now,
+                status="valid"
             )
-        else:
-            percentage = 0
 
-        enrollment = Enrollment.query.filter_by(
-            learner_id=learner.id,
-            course_id=course.id
-        ).first()
+            db.session.add(
+                certificate
+            )
 
-        if enrollment:
-            enrollment.progress = percentage
-
-            if percentage >= 100:
-                enrollment.status = "completed"
-
-                # ------------------------------------------------
-                # Generate certificate automatically
-                # ------------------------------------------------
-
-                existing_certificate = Certificate.query.filter_by(
-                    learner_id=learner.id,
-                    course_id=course.id
-                ).first()
-
-                if not existing_certificate:
-
-                    now = datetime.utcnow()
-
-                    certificate_id = (
-                        f"CERT-{now.year}-"
-                        f"{learner.id:04d}-"
-                        f"{course.id}"
-                    )
-
-                    certificate = Certificate(
-                        certificate_id=certificate_id,
-                        learner_id=learner.id,
-                        course_id=course.id,
-                        start_date=enrollment.enrolled_at or now,
-                        end_date=now,
-                        status="valid"
-                    )
-
-                    db.session.add(certificate)
-
-            db.session.commit()
+    db.session.commit()
 
     return jsonify({
-        "message": "Lesson progress updated",
-        "lesson_id": lesson_id,
-        "completed": completed
-    }), 200
+    "valid": certificate.status == "valid",
+    "certificate": {
+        "certificate_id": certificate.certificate_id,
+        "course_title": (
+            course.title
+            if course
+            else None
+        ),
+        "start_date": (
+            certificate.start_date.isoformat()
+            if certificate.start_date
+            else None
+        ),
+        "end_date": (
+            certificate.end_date.isoformat()
+            if certificate.end_date
+            else None
+        ),
+        "status": certificate.status
+    }
+})
 
 @api.get("/learner/courses/<string:course_id>/progress")
 @role_required("learner")
@@ -2826,12 +3748,53 @@ def record_learning_time(user):
             data.get("duration_seconds", 0)
         )
     except (TypeError, ValueError):
-        duration_seconds = 0
+        return jsonify({
+            "error": "duration_seconds must be a valid integer"
+        }), 400
+
+    # Prevent clients from submitting an unreasonably large
+    # amount of learning time in a single record.
+    MAX_LEARNING_TIME_SECONDS = 60 * 60  # 1 hour
 
     if duration_seconds <= 0:
         return jsonify({
             "error": "duration_seconds must be greater than 0"
         }), 400
+
+    if duration_seconds > MAX_LEARNING_TIME_SECONDS:
+        return jsonify({
+            "error": "duration_seconds cannot exceed 3600 seconds"
+        }), 400
+
+    # A learning-time record must belong to an active enrollment.
+    if course_id:
+        enrollment = Enrollment.query.filter_by(
+            learner_id=learner.id,
+            course_id=course_id,
+            status="active"
+        ).first()
+
+        if not enrollment:
+            return jsonify({
+                "error": "Active course enrollment required"
+            }), 403
+
+    # If a lesson is supplied, make sure it belongs to the
+    # specified course.
+    if lesson_id:
+        lesson = db.session.get(Lesson, lesson_id)
+
+        if not lesson:
+            return jsonify({
+                "error": "Lesson not found"
+            }), 404
+
+        module = db.session.get(Module, lesson.module_id)
+
+        if not module or module.course_id != course_id:
+            return jsonify({
+                "error": "Lesson not found for this course"
+            }), 404
 
     record = LearningTime(
         learner_id=learner.id,
@@ -3014,11 +3977,41 @@ def learner_certificates(user):
             "error": "Learner profile not found"
         }), 404
 
-    certificates = Certificate.query.filter_by(
-        learner_id=learner.id
-    ).order_by(
-        Certificate.id.desc()
-    ).all()
+    try:
+        page = max(
+            int(request.args.get("page", 1)),
+            1
+        )
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+            max(
+                int(request.args.get("limit", 20)),
+                1
+            ),
+            100
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
+        Certificate.query
+        .filter_by(
+            learner_id=learner.id
+        )
+        .order_by(
+            Certificate.id.desc()
+        )
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False
+        )
+    )
+
+    certificates = pagination.items
 
     result = []
 
@@ -3055,7 +4048,15 @@ def learner_certificates(user):
         })
 
     return jsonify({
-        "certificates": result
+        "certificates": result,
+        "pagination": {
+            "page": pagination.page,
+            "limit": pagination.per_page,
+            "total": pagination.total,
+            "pages": pagination.pages,
+            "has_next": pagination.has_next,
+            "has_previous": pagination.has_prev
+        }
     })
 
 
@@ -3097,8 +4098,8 @@ def learner_certificate_detail(
         "certificate_id": certificate.certificate_id,
         "learner_id": learner.id,
         "learner_name": (
-            learner_user.name
-            if learner_user
+            user.name
+            if user
             else None
         ),
         "course_id": certificate.course_id,
@@ -3138,17 +4139,8 @@ def verify_certificate(certificate_number):
             "error": "Certificate not found"
         }), 404
 
-    learner = Learner.query.get(
-        certificate.learner_id
-    )
-
-    learner_user = (
-        User.query.get(learner.user_id)
-        if learner
-        else None
-    )
-
-    course = Course.query.get(
+    course = db.session.get(
+        Course,
         certificate.course_id
     )
 
@@ -3156,11 +4148,6 @@ def verify_certificate(certificate_number):
         "valid": certificate.status == "valid",
         "certificate": {
             "certificate_id": certificate.certificate_id,
-            "learner_name": (
-                learner_user.name
-                if learner_user
-                else None
-            ),
             "course_title": (
                 course.title
                 if course
@@ -3207,11 +4194,41 @@ def trainer_course_learners(user, course_id):
             "error": "Course not found"
         }), 404
 
-    enrollments = Enrollment.query.filter_by(
-        course_id=course_id
-    ).order_by(
-        Enrollment.id.desc()
-    ).all()
+    try:
+        page = max(
+        int(request.args.get("page", 1)),
+        1
+    )
+    except (TypeError, ValueError):
+         page = 1
+
+    try:
+        limit = min(
+        max(
+            int(request.args.get("limit", 20)),
+            1
+        ),
+        100
+    )
+    except (TypeError, ValueError):
+     limit = 20
+
+    pagination = (
+         Enrollment.query
+        .filter_by(
+            course_id=course_id
+        )
+        .order_by(
+            Enrollment.id.desc()
+        )
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False
+        )
+)
+
+    enrollments = pagination.items
 
     result = []
 
@@ -3257,9 +4274,17 @@ def trainer_course_learners(user, course_id):
         })
 
     return jsonify({
-        "course": course_json(course),
-        "learners": result
-    })
+    "course": course_json(course),
+    "learners": result,
+    "pagination": {
+        "page": pagination.page,
+        "limit": pagination.per_page,
+        "total": pagination.total,
+        "pages": pagination.pages,
+        "has_next": pagination.has_next,
+        "has_previous": pagination.has_prev
+    }
+})
 
 
 # ============================================================
@@ -3454,18 +4479,56 @@ def trainer_assignments(user, course_id):
             "error": "Course not found"
         }), 404
 
-    assignments = Assignment.query.filter_by(
-        course_id=course_id
-    ).order_by(
-        Assignment.id.desc()
-    ).all()
+    try:
+        page = max(
+            int(request.args.get("page", 1)),
+            1
+        )
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+            max(
+                int(request.args.get("limit", 20)),
+                1
+            ),
+            100
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
+        Assignment.query
+        .filter_by(
+            course_id=course_id
+        )
+        .order_by(
+            Assignment.id.desc()
+        )
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False
+        )
+)
+
+    assignments = pagination.items
 
     return jsonify({
-        "assignments": [
-            assignment_json(assignment)
-            for assignment in assignments
-        ]
-    })
+    "assignments": [
+        assignment_json(assignment)
+        for assignment in assignments
+    ],
+    "pagination": {
+        "page": pagination.page,
+        "limit": pagination.per_page,
+        "total": pagination.total,
+        "pages": pagination.pages,
+        "has_next": pagination.has_next,
+        "has_previous": pagination.has_prev
+    }
+})
 
 
 @api.get("/trainer/assignments/<int:assignment_id>")
@@ -3502,11 +4565,41 @@ def trainer_assignment_detail(
             "error": "Assignment not found"
         }), 404
 
-    submissions = AssignmentSubmission.query.filter_by(
-        assignment_id=assignment.id
-    ).order_by(
-        AssignmentSubmission.id.desc()
-    ).all()
+    try:
+        page = max(
+            int(request.args.get("page", 1)),
+            1
+        )
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+            max(
+                int(request.args.get("limit", 20)),
+                1
+            ),
+            100
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
+        AssignmentSubmission.query
+        .filter_by(
+            assignment_id=assignment.id
+        )
+        .order_by(
+            AssignmentSubmission.id.desc()
+        )
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False
+        )
+)
+
+    submissions = pagination.items
 
     result = []
 
@@ -3525,13 +4618,13 @@ def trainer_assignment_detail(
             "id": submission.id,
             "learner_id": submission.learner_id,
             "learner_name": (
-                learner_user.name
-                if learner_user
+                user.name
+                if user
                 else None
             ),
             "learner_email": (
-                learner_user.email
-                if learner_user
+                user.email
+                if user
                 else None
             ),
             "content": submission.submission,
@@ -3547,11 +4640,19 @@ def trainer_assignment_detail(
         })
 
     return jsonify({
-        "assignment": assignment_json(
-            assignment
-        ),
-        "submissions": result
-    })
+    "assignment": assignment_json(
+        assignment
+    ),
+    "submissions": result,
+    "pagination": {
+        "page": pagination.page,
+        "limit": pagination.per_page,
+        "total": pagination.total,
+        "pages": pagination.pages,
+        "has_next": pagination.has_next,
+        "has_previous": pagination.has_prev
+    }
+})
 
 
 @api.delete("/trainer/assignments/<int:assignment_id>")
@@ -3631,12 +4732,41 @@ def learner_course_assignments(
             "error": "You are not enrolled in this course"
         }), 403
 
-    assignments = Assignment.query.filter_by(
-        course_id=course_id
-    ).order_by(
-        Assignment.id.desc()
-    ).all()
+    try:
+        page = max(
+            int(request.args.get("page", 1)),
+            1
+        )
+    except (TypeError, ValueError):
+        page = 1
 
+    try:
+        limit = min(
+            max(
+                int(request.args.get("limit", 20)),
+                1
+            ),
+            100
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
+        Assignment.query
+        .filter_by(
+            course_id=course_id
+        )
+        .order_by(
+            Assignment.id.desc()
+        )
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False
+        )
+)
+
+    assignments = pagination.items
     result = []
 
     for assignment in assignments:
@@ -3694,9 +4824,16 @@ def learner_course_assignments(
         result.append(item)
 
     return jsonify({
-        "assignments": result
-    })
-
+    "assignments": result,
+    "pagination": {
+        "page": pagination.page,
+        "limit": pagination.per_page,
+        "total": pagination.total,
+        "pages": pagination.pages,
+        "has_next": pagination.has_next,
+        "has_previous": pagination.has_prev
+    }
+})
 
 @api.get("/learner/assignments/<int:assignment_id>")
 @role_required("learner")
@@ -3854,7 +4991,7 @@ def learner_submit_assignment(
         db.session.add(submission)
 
     submission.submission = submission_text
-    submission.submitted_at = datetime.utcnow()
+    submission.submitted_at = datetime.now(timezone.utc)
 
     db.session.commit()
 
@@ -3957,17 +5094,53 @@ def trainer_course_quizzes(user, course_id):
             "error": "Course not found"
         }), 404
 
-    quizzes = Quiz.query.filter_by(
-        course_id=course_id
-    ).order_by(
-        Quiz.id.desc()
-    ).all()
+    try:
+        page = max(
+            int(request.args.get("page", 1)),
+            1
+        )
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+            max(
+                int(request.args.get("limit", 20)),
+                1
+            ),
+            100
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
+        Quiz.query
+        .filter_by(
+            course_id=course_id
+        )
+        .order_by(
+            Quiz.id.desc()
+        )
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False
+        )
+    )
 
     return jsonify({
         "exams": [
             quiz_json(quiz)
-            for quiz in quizzes
-        ]
+            for quiz in pagination.items
+        ],
+        "pagination": {
+            "page": pagination.page,
+            "limit": pagination.per_page,
+            "total": pagination.total,
+            "pages": pagination.pages,
+            "has_next": pagination.has_next,
+            "has_previous": pagination.has_prev
+        }
     })
 
 
@@ -3986,8 +5159,9 @@ def trainer_quiz_detail(
             "error": "Trainer profile not found"
         }), 404
 
-    quiz = Quiz.query.get(
-        quiz_id
+    quiz = db.session.get(
+        Quiz,
+        exam_id
     )
 
     if not quiz:
@@ -4258,11 +5432,39 @@ def trainer_quiz_questions(
             "error": "Exam not found"
         }), 404
 
-    questions = Question.query.filter_by(
-        quiz_id=quiz.id
-    ).order_by(
-        Question.id.asc()
-    ).all()
+    try:
+        page = max(
+            int(request.args.get("page", 1)),
+            1
+        )
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+            max(
+                int(request.args.get("limit", 20)),
+                1
+            ),
+            100
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
+        Question.query
+        .filter_by(
+            quiz_id=quiz.id
+        )
+        .order_by(
+            Question.id.asc()
+        )
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False
+        )
+    )
 
     return jsonify({
         "questions": [
@@ -4284,8 +5486,16 @@ def trainer_quiz_questions(
                 "correct_answer": question.correct_answer,
                 "marks": question.marks
             }
-            for question in questions
-        ]
+            for question in pagination.items
+        ],
+        "pagination": {
+            "page": pagination.page,
+            "limit": pagination.per_page,
+            "total": pagination.total,
+            "pages": pagination.pages,
+            "has_next": pagination.has_next,
+            "has_previous": pagination.has_prev
+        }
     })
 
 # ============================================================
@@ -4572,11 +5782,50 @@ def learner_exams(user):
             "exams": []
         })
 
-    quizzes = Quiz.query.filter(
-        Quiz.course_id.in_(course_ids)
-    ).order_by(
-        Quiz.id.desc()
-    ).all()
+    try:
+        page = max(
+            int(request.args.get("page", 1)),
+            1
+        )
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+            max(
+                int(request.args.get("limit", 20)),
+                1
+            ),
+            100
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
+        Quiz.query
+        .join(
+            Question,
+            Question.quiz_id == Quiz.id
+        )
+        .filter(
+            Quiz.course_id.in_(course_ids)
+        )
+        .distinct()
+        .order_by(
+            Quiz.id.desc()
+        )
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False
+        )
+    )
+    
+
+    quizzes = pagination.items
 
     exams = []
 
@@ -4589,10 +5838,8 @@ def learner_exams(user):
             quiz_id=quiz.id
         ).count()
 
-        if question_count == 0:
-            continue
-
-        course = Course.query.get(
+        course = db.session.get(
+            Course,
             quiz.course_id
         )
 
@@ -4635,7 +5882,15 @@ def learner_exams(user):
         exams.append(item)
 
     return jsonify({
-        "exams": exams
+        "exams": exams,
+        "pagination": {
+            "page": pagination.page,
+            "limit": pagination.per_page,
+            "total": pagination.total,
+            "pages": pagination.pages,
+            "has_next": pagination.has_next,
+            "has_previous": pagination.has_prev
+        }
     })
 
 
@@ -4654,7 +5909,8 @@ def learner_exam_detail(
             "error": "Learner profile not found"
         }), 404
 
-    quiz = Quiz.query.get(
+    quiz = db.session.get(
+        Quiz,
         exam_id
     )
 
@@ -4673,6 +5929,80 @@ def learner_exam_detail(
             "error": "You are not enrolled in this course"
         }), 403
 
+        # --------------------------------------------------------
+    # QUIZ ATTEMPT / SERVER-SIDE TIMER
+    # --------------------------------------------------------
+
+    max_attempts = int(quiz.max_attempts or 1)
+
+    active_attempt = (
+        QuizAttempt.query
+        .filter_by(
+            quiz_id=quiz.id,
+            learner_id=learner.id,
+            attempted_at=None
+        )
+        .order_by(QuizAttempt.id.desc())
+        .first()
+    )
+
+    attempt_count = QuizAttempt.query.filter_by(
+        quiz_id=quiz.id,
+        learner_id=learner.id
+    ).count()
+
+    if not active_attempt:
+
+        if attempt_count >= max_attempts:
+            return jsonify({
+                "error": "Maximum quiz attempts reached",
+                "max_attempts": max_attempts,
+                "attempts_used": attempt_count
+            }), 403
+
+        active_attempt = QuizAttempt(
+            quiz_id=quiz.id,
+            learner_id=learner.id,
+            started_at=datetime.now(timezone.utc),
+            attempted_at=None,
+            score=0,
+            total=0
+        )
+
+        db.session.add(active_attempt)
+        db.session.commit()
+
+        attempt_count += 1
+
+    now = datetime.now(timezone.utc)
+
+    started_at = active_attempt.started_at
+
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(
+            tzinfo=timezone.utc
+        )
+
+    expires_at = (
+        started_at +
+        timedelta(
+            minutes=int(
+                quiz.duration_minutes or 30
+            )
+        )
+    )
+
+    if now >= expires_at:
+        return jsonify({
+            "error": "Quiz time limit exceeded",
+            "duration_minutes": int(
+                quiz.duration_minutes or 30
+            ),
+            "started_at": started_at.isoformat(),
+            "expires_at": expires_at.isoformat(),
+            "attempt_id": active_attempt.id
+        }), 403
+
     questions = Question.query.filter_by(
         quiz_id=quiz.id
     ).order_by(
@@ -4684,7 +6014,8 @@ def learner_exam_detail(
             "error": "This exam does not have any questions yet"
         }), 400
 
-    course = Course.query.get(
+    course = db.session.get(
+        Course,
         quiz.course_id
     )
 
@@ -4733,7 +6064,19 @@ def learner_exam_detail(
                 int(question.marks or 0)
                 for question in questions
             ),
-            "question_count": len(questions)
+            "question_count": len(questions),
+            "max_attempts": max_attempts,
+            "attempts_used": attempt_count,
+            "attempts_remaining": max(
+                0,
+                max_attempts - attempt_count
+            ),
+            "duration_minutes": int(
+                quiz.duration_minutes or 30
+            ),
+            "attempt_id": active_attempt.id,
+            "started_at": started_at.isoformat(),
+            "expires_at": expires_at.isoformat()
         },
         "questions": question_list
     })
@@ -4758,7 +6101,8 @@ def learner_submit_exam(
             "error": "Learner profile not found"
         }), 404
 
-    quiz = Quiz.query.get(
+    quiz = db.session.get(
+        Quiz,
         exam_id
     )
 
@@ -4775,6 +6119,70 @@ def learner_submit_exam(
     if not enrollment:
         return jsonify({
             "error": "You are not enrolled in this course"
+        }), 403
+
+        # --------------------------------------------------------
+    # SERVER-SIDE QUIZ TIMER
+    # --------------------------------------------------------
+
+    max_attempts = int(quiz.max_attempts or 1)
+
+    active_attempt = (
+        QuizAttempt.query
+        .filter_by(
+            quiz_id=quiz.id,
+            learner_id=learner.id,
+            attempted_at=None
+        )
+        .order_by(QuizAttempt.id.desc())
+        .first()
+    )
+
+    attempt_count = QuizAttempt.query.filter_by(
+        quiz_id=quiz.id,
+        learner_id=learner.id
+    ).count()
+
+    if not active_attempt:
+        if attempt_count >= max_attempts:
+            return jsonify({
+                "error": "Maximum quiz attempts reached",
+                "max_attempts": max_attempts,
+                "attempts_used": attempt_count
+            }), 403
+
+        return jsonify({
+            "error": "No active quiz attempt. Please start the quiz first."
+        }), 400
+
+    now = datetime.now(timezone.utc)
+
+    started_at = active_attempt.started_at
+
+    # Some databases may return a naive datetime.
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(
+            tzinfo=timezone.utc
+        )
+
+    expires_at = (
+        started_at +
+        timedelta(
+            minutes=int(
+                quiz.duration_minutes or 30
+            )
+        )
+    )
+
+    if now >= expires_at:
+        return jsonify({
+            "error": "Quiz time limit exceeded",
+            "duration_minutes": int(
+                quiz.duration_minutes or 30
+            ),
+            "started_at": started_at.isoformat(),
+            "expires_at": expires_at.isoformat(),
+            "attempt_id": active_attempt.id
         }), 403
 
     questions = Question.query.filter_by(
@@ -4871,18 +6279,15 @@ def learner_submit_exam(
             "marks": marks
         })
 
-    # --------------------------------------------------------
-    # Save attempt
+        # --------------------------------------------------------
+    # Complete the active attempt
     # --------------------------------------------------------
 
-    attempt = QuizAttempt(
-    quiz_id=quiz.id,
-    learner_id=learner.id,
-    score=score,
-    total=total
-    )
+    attempt = active_attempt
 
-    db.session.add(attempt)
+    attempt.score = score
+    attempt.total = total
+    attempt.attempted_at = datetime.now(timezone.utc)
 
     db.session.flush()
 
@@ -4999,11 +6404,41 @@ def learner_quiz_attempts(user):
             "error": "Learner profile not found"
         }), 404
 
-    attempts = QuizAttempt.query.filter_by(
-        learner_id=learner.id
-    ).order_by(
-        QuizAttempt.id.desc()
-    ).all()
+    try:
+        page = max(
+            int(request.args.get("page", 1)),
+            1
+        )
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+            max(
+                int(request.args.get("limit", 20)),
+                1
+            ),
+            100
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
+        QuizAttempt.query
+        .filter_by(
+            learner_id=learner.id
+        )
+        .order_by(
+            QuizAttempt.id.desc()
+        )
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False
+        )
+    )
+
+    attempts = pagination.items
 
     result = []
 
@@ -5037,14 +6472,14 @@ def learner_quiz_attempts(user):
     "learner_id": attempt.learner_id,
 
     "learner_name": (
-        learner_user.name
-        if learner_user
+        user.name
+        if user
         else None
     ),
 
     "learner_email": (
-        learner_user.email
-        if learner_user
+        user.email
+        if user
         else None
     ),
 
@@ -5067,10 +6502,17 @@ def learner_quiz_attempts(user):
     )
 })
 
-    return jsonify({
-        "attempts": result
+        return jsonify({
+        "attempts": result,
+        "pagination": {
+            "page": pagination.page,
+            "limit": pagination.per_page,
+            "total": pagination.total,
+            "pages": pagination.pages,
+            "has_next": pagination.has_next,
+            "has_previous": pagination.has_prev
+        }
     })
-
 # ============================================================
 # LEARNER — VIEW OWN EXAM RESULT
 # ============================================================
@@ -5089,6 +6531,7 @@ def learner_exam_result(user, exam_id):
         }), 404
 
     quiz = Quiz.query.get(
+        Quiz,
         exam_id
     )
 
@@ -5109,6 +6552,90 @@ def learner_exam_result(user, exam_id):
     if not enrollment:
         return jsonify({
             "error": "You are not enrolled in this course"
+        }), 403
+
+        # --------------------------------------------------------
+    # QUIZ ATTEMPT / SERVER-SIDE TIMER
+    # --------------------------------------------------------
+
+    max_attempts = int(quiz.max_attempts or 1)
+
+    # Find the learner's current unfinished attempt.
+    active_attempt = (
+        QuizAttempt.query
+        .filter_by(
+            quiz_id=quiz.id,
+            learner_id=learner.id,
+            attempted_at=None
+        )
+        .order_by(QuizAttempt.id.desc())
+        .first()
+    )
+
+    # Count all attempts, including an unfinished attempt.
+    attempt_count = QuizAttempt.query.filter_by(
+        quiz_id=quiz.id,
+        learner_id=learner.id
+    ).count()
+
+    # If there is no active attempt, this is a new attempt.
+    if not active_attempt:
+
+        if attempt_count >= max_attempts:
+            return jsonify({
+                "error": "Maximum quiz attempts reached",
+                "max_attempts": max_attempts,
+                "attempts_used": attempt_count
+            }), 403
+
+        active_attempt = QuizAttempt(
+            quiz_id=quiz.id,
+            learner_id=learner.id,
+            started_at=datetime.now(timezone.utc),
+            attempted_at=None,
+            score=0,
+            total=0
+        )
+
+        db.session.add(active_attempt)
+        db.session.commit()
+
+        attempt_count += 1
+
+    # --------------------------------------------------------
+    # SERVER-CONTROLLED EXPIRY
+    # --------------------------------------------------------
+
+    now = datetime.now(timezone.utc)
+
+    started_at = active_attempt.started_at
+
+    # Handle databases that return a naive datetime.
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(
+            tzinfo=timezone.utc
+        )
+
+    expires_at = (
+        started_at +
+        timedelta(
+            minutes=int(
+                quiz.duration_minutes or 30
+            )
+        )
+    )
+
+    # If an unfinished attempt has already expired,
+    # do not allow the learner to continue it.
+    if now >= expires_at:
+        return jsonify({
+            "error": "Quiz time limit exceeded",
+            "duration_minutes": int(
+                quiz.duration_minutes or 30
+            ),
+            "started_at": started_at.isoformat(),
+            "expires_at": expires_at.isoformat(),
+            "attempt_id": active_attempt.id
         }), 403
 
     # --------------------------------------------------------
@@ -5492,11 +7019,41 @@ def trainer_quiz_attempts(
             "error": "Exam not found"
         }), 404
 
-    attempts = QuizAttempt.query.filter_by(
-        quiz_id=quiz.id
-    ).order_by(
-        QuizAttempt.id.desc()
-    ).all()
+    try:
+        page = max(
+            int(request.args.get("page", 1)),
+            1
+        )
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+            max(
+                int(request.args.get("limit", 20)),
+                1
+            ),
+            100
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
+        QuizAttempt.query
+        .filter_by(
+            quiz_id=quiz.id
+        )
+        .order_by(
+            QuizAttempt.id.desc()
+        )
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False
+        )
+    )
+
+    attempts = pagination.items
 
     result = []
 
@@ -5530,13 +7087,14 @@ def trainer_quiz_attempts(
             "attempt_id": attempt.id,
             "learner_id": attempt.learner_id,
             "learner_name": (
-                learner_user.name
-                if learner_user
+                user.name
+                if user
                 else None
             ),
+            
             "learner_email": (
-                learner_user.email
-                if learner_user
+                user.email
+                if user
                 else None
             ),
             "score": attempt.score,
@@ -5549,9 +7107,17 @@ def trainer_quiz_attempts(
             )
         })
 
-    return jsonify({
+        return jsonify({
         "exam": quiz_json(quiz),
-        "attempts": result
+        "attempts": result,
+        "pagination": {
+            "page": pagination.page,
+            "limit": pagination.per_page,
+            "total": pagination.total,
+            "pages": pagination.pages,
+            "has_next": pagination.has_next,
+            "has_previous": pagination.has_prev
+        }
     })
 
 
@@ -6039,15 +7605,164 @@ def trainer_delete_lesson_resource(
 # ============================================================
 
 @api.get("/files/<path:filename>")
-def serve_uploaded_file(filename):
-    upload_folder = current_app.config[
-        "UPLOAD_FOLDER"
-    ]
-
-    return send_from_directory(
-        upload_folder,
-        filename
+@token_required
+def serve_uploaded_file(user, filename):
+    upload_folder = os.path.abspath(
+        current_app.config["UPLOAD_FOLDER"]
     )
+
+    requested_path = os.path.abspath(
+        os.path.join(
+            upload_folder,
+            filename
+        )
+    )
+
+    # Prevent path traversal outside the upload directory.
+    if not requested_path.startswith(
+        upload_folder + os.sep
+    ):
+        return jsonify({
+            "error": "Invalid file path"
+        }), 400
+
+    if not os.path.isfile(requested_path):
+        return jsonify({
+            "error": "File not found"
+        }), 404
+
+    # -----------------------------------------------------
+    # ADMIN / TRAINER ACCESS
+    # -----------------------------------------------------
+
+    if user.role in ("admin", "trainer"):
+        return send_from_directory(
+            upload_folder,
+            filename
+        )
+
+    # -----------------------------------------------------
+    # LEARNER ACCESS
+    # -----------------------------------------------------
+
+    if user.role != "learner":
+        return jsonify({
+            "error": "You do not have permission to access this file"
+        }), 403
+
+    learner = Learner.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not learner:
+        return jsonify({
+            "error": "Learner profile not found"
+        }), 404
+
+    normalized_requested = os.path.normcase(
+        os.path.normpath(requested_path)
+    )
+
+    # Find the lesson resource matching this physical file.
+    resource = LessonResource.query.filter(
+        LessonResource.file_path.isnot(None)
+    ).all()
+
+    matching_resource = None
+
+    for item in resource:
+        stored_path = os.path.abspath(
+            os.path.normpath(item.file_path)
+        )
+
+        if os.path.normcase(stored_path) == normalized_requested:
+            matching_resource = item
+            break
+
+    if matching_resource:
+        lesson = db.session.get(
+            Lesson,
+            matching_resource.lesson_id
+        )
+
+        if not lesson:
+            return jsonify({
+                "error": "Lesson not found"
+            }), 404
+
+        module = db.session.get(
+            Module,
+            lesson.module_id
+        )
+
+        if not module:
+            return jsonify({
+                "error": "Module not found"
+            }), 404
+
+        enrollment = Enrollment.query.filter_by(
+            learner_id=learner.id,
+            course_id=module.course_id,
+            status="active"
+        ).first()
+
+        if not enrollment:
+            return jsonify({
+                "error": "You are not enrolled in this course"
+            }), 403
+
+        return send_from_directory(
+            upload_folder,
+            filename
+        )
+
+    # -----------------------------------------------------
+    # LEGACY LESSON VIDEO/PDF ACCESS
+    # -----------------------------------------------------
+
+    lesson = None
+
+    lessons = Lesson.query.all()
+
+    for item in lessons:
+        if item.video_url == "/" + filename:
+            lesson = item
+            break
+
+        if item.pdf_url == "/" + filename:
+            lesson = item
+            break
+
+    if lesson:
+        module = db.session.get(
+            Module,
+            lesson.module_id
+        )
+
+        if not module:
+            return jsonify({
+                "error": "Module not found"
+            }), 404
+
+        enrollment = Enrollment.query.filter_by(
+            learner_id=learner.id,
+            course_id=module.course_id,
+            status="active"
+        ).first()
+
+        if not enrollment:
+            return jsonify({
+                "error": "You are not enrolled in this course"
+            }), 403
+
+        return send_from_directory(
+            upload_folder,
+            filename
+        )
+
+    return jsonify({
+        "error": "File access is not authorized"
+    }), 403
 
 
 # ============================================================
@@ -6057,13 +7772,40 @@ def serve_uploaded_file(filename):
 @api.get("/admin/enrollments")
 @role_required("admin")
 def admin_enrollments(user):
-    enrollments = Enrollment.query.order_by(
-        Enrollment.id.desc()
-    ).all()
+    try:
+        page = max(
+            int(request.args.get("page", 1)),
+            1,
+        )
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+            max(
+                int(request.args.get("limit", 20)),
+                1,
+            ),
+            100,
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
+        Enrollment.query
+        .order_by(
+            Enrollment.id.desc()
+        )
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False,
+        )
+    )
 
     result = []
 
-    for enrollment in enrollments:
+    for enrollment in pagination.items:
         learner = Learner.query.get(
             enrollment.learner_id
         )
@@ -6084,13 +7826,13 @@ def admin_enrollments(user):
             "id": enrollment.id,
             "learner_id": enrollment.learner_id,
             "learner_name": (
-                learner_user.name
-                if learner_user
+                user.name
+                if user
                 else None
             ),
             "learner_email": (
-                learner_user.email
-                if learner_user
+                user.email
+                if user
                 else None
             ),
             "course_id": enrollment.course_id,
@@ -6107,11 +7849,19 @@ def admin_enrollments(user):
                 enrollment.enrolled_at.isoformat()
                 if enrollment.enrolled_at
                 else None
-            )
+            ),
         })
 
     return jsonify({
-        "enrollments": result
+        "enrollments": result,
+        "pagination": {
+            "page": pagination.page,
+            "limit": pagination.per_page,
+            "total": pagination.total,
+            "pages": pagination.pages,
+            "has_next": pagination.has_next,
+            "has_previous": pagination.has_prev,
+        },
     })
 
 
@@ -6218,16 +7968,41 @@ def admin_delete_enrollment(
 @api.get("/admin/certificates")
 @role_required("admin")
 def admin_certificates(user):
+    try:
+        page = max(
+            int(request.args.get("page", 1)),
+            1,
+        )
+    except (TypeError, ValueError):
+        page = 1
 
-    certificates = Certificate.query.order_by(
-        Certificate.created_at.desc(),
-        Certificate.id.desc()
-    ).all()
+    try:
+        limit = min(
+            max(
+                int(request.args.get("limit", 20)),
+                1,
+            ),
+            100,
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
+        Certificate.query
+        .order_by(
+            Certificate.created_at.desc(),
+            Certificate.id.desc(),
+        )
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False,
+        )
+    )
 
     result = []
 
-    for certificate in certificates:
-
+    for certificate in pagination.items:
         learner = certificate.learner
         course = certificate.course
 
@@ -6246,75 +8021,66 @@ def admin_certificates(user):
                 getattr(
                     learner_user,
                     "name",
-                    None
+                    None,
                 )
                 or getattr(
                     learner_user,
                     "full_name",
-                    None
+                    None,
                 )
                 or getattr(
                     learner_user,
                     "username",
-                    None
+                    None,
                 )
             )
 
             learner_email = getattr(
                 learner_user,
                 "email",
-                None
+                None,
             )
 
         result.append({
-
             "id": certificate.id,
-
-            "certificate_id":
-                certificate.certificate_id,
-
-            "learner_id":
-                certificate.learner_id,
-
-            "learner_name":
-                learner_name,
-
-            "learner_email":
-                learner_email,
-
-            "course_id":
-                certificate.course_id,
-
+            "certificate_id": certificate.certificate_id,
+            "learner_id": certificate.learner_id,
+            "learner_name": learner_name,
+            "learner_email": learner_email,
+            "course_id": certificate.course_id,
             "course_name": (
                 course.title
                 if course
                 else None
             ),
-
             "start_date": (
                 certificate.start_date.isoformat()
                 if certificate.start_date
                 else None
             ),
-
             "end_date": (
                 certificate.end_date.isoformat()
                 if certificate.end_date
                 else None
             ),
-
             "created_at": (
                 certificate.created_at.isoformat()
                 if certificate.created_at
                 else None
             ),
-
-            "status":
-                certificate.status
+            "status": certificate.status,
         })
 
     return jsonify({
-        "certificates": result
+        "certificates": result,
+        "pagination": {
+            "page": pagination.page,
+            "limit": pagination.per_page,
+            "total": pagination.total,
+            "pages": pagination.pages,
+            "has_next": pagination.has_next,
+            "has_previous": pagination.has_prev,
+        },
     }), 200
 
 # ============================================================
@@ -6324,38 +8090,73 @@ def admin_certificates(user):
 @api.get("/admin/batches")
 @role_required("admin")
 def admin_batches(user):
-    batches = Batch.query.order_by(
-        Batch.id.desc()
-    ).all()
+    try:
+        page = max(
+            int(request.args.get("page", 1)),
+            1,
+        )
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+            max(
+                int(request.args.get("limit", 20)),
+                1,
+            ),
+            100,
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
+        Batch.query
+        .order_by(
+            Batch.id.desc()
+        )
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False,
+        )
+    )
 
     result = []
 
-    for batch in batches:
+    for batch in pagination.items:
         result.append({
             "id": batch.id,
             "name": getattr(
                 batch,
                 "name",
-                None
+                None,
             ),
             "status": getattr(
                 batch,
                 "status",
-                None
+                None,
             ),
             "created_at": (
                 batch.created_at.isoformat()
                 if getattr(
                     batch,
                     "created_at",
-                    None
+                    None,
                 )
                 else None
-            )
+            ),
         })
 
     return jsonify({
-        "batches": result
+        "batches": result,
+        "pagination": {
+            "page": pagination.page,
+            "limit": pagination.per_page,
+            "total": pagination.total,
+            "pages": pagination.pages,
+            "has_next": pagination.has_next,
+            "has_previous": pagination.has_prev,
+        },
     })
 
 
@@ -6463,11 +8264,49 @@ def get_course_discussions(
             "error": "Course not found"
         }), 404
 
-    discussions = Discussion.query.filter_by(
-        course_id=course_id
-    ).order_by(
-        Discussion.id.desc()
-    ).all()
+    try:
+            page = max(
+            int(request.args.get("page", 1)),
+            1
+        )
+    except (TypeError, ValueError):
+            page = 1
+
+    try:
+            limit = min(
+            max(
+                int(request.args.get("limit", 20)),
+                1
+            ),
+            100
+        )
+    except (TypeError, ValueError):
+            limit = 20
+
+    pagination = (
+        Discussion.query
+        .join(
+            Lesson,
+            Discussion.lesson_id == Lesson.id
+        )
+        .join(
+            Module,
+            Lesson.module_id == Module.id
+        )
+        .filter(
+            Module.course_id == course_id
+        )
+        .order_by(
+            Discussion.id.desc()
+        )
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False
+        )
+    )
+
+    discussions = pagination.items
 
     result = []
 
@@ -6506,7 +8345,15 @@ def get_course_discussions(
         })
 
     return jsonify({
-        "discussions": result
+        "discussions": result,
+        "pagination": {
+            "page": pagination.page,
+            "limit": pagination.per_page,
+            "total": pagination.total,
+            "pages": pagination.pages,
+            "has_next": pagination.has_next,
+            "has_previous": pagination.has_prev
+        }
     })
 
 
@@ -6725,9 +8572,9 @@ def change_password(user):
             "error": "New password is required"
         }), 400
 
-    if len(new_password) < 6:
+    if len(new_password) < 8:
         return jsonify({
-            "error": "New password must be at least 6 characters"
+            "error": "New password must be at least 8 characters"
         }), 400
 
     if not check_password_hash(
@@ -6768,11 +8615,41 @@ def trainer_coding_exams(user):
             "error": "Trainer profile not found"
         }), 404
 
-    exams = CodingExam.query.filter_by(
-        trainer_id=trainer.id
-    ).order_by(
-        CodingExam.id.desc()
-    ).all()
+    try:
+        page = max(
+            int(request.args.get("page", 1)),
+            1
+        )
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+            max(
+                int(request.args.get("limit", 20)),
+                1
+            ),
+            100
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
+        CodingExam.query
+        .filter_by(
+            trainer_id=trainer.id
+        )
+        .order_by(
+            CodingExam.id.desc()
+        )
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False
+        )
+    )
+
+    exams = pagination.items
 
     result = []
 
@@ -6803,8 +8680,16 @@ def trainer_coding_exams(user):
             )
         })
 
-    return jsonify({
-        "exams": result
+        return jsonify({
+        "exams": result,
+        "pagination": {
+            "page": pagination.page,
+            "limit": pagination.per_page,
+            "total": pagination.total,
+            "pages": pagination.pages,
+            "has_next": pagination.has_next,
+            "has_previous": pagination.has_prev
+        }
     })
 
 
@@ -6919,12 +8804,42 @@ def trainer_get_coding_exam(user, exam_id):
             "error": "Coding exam not found"
         }), 404
 
-    questions = CodingQuestion.query.filter_by(
-        exam_id=exam.id
-    ).order_by(
-        CodingQuestion.order_index.asc(),
-        CodingQuestion.id.asc()
-    ).all()
+    try:
+        page = max(
+            int(request.args.get("page", 1)),
+            1
+        )
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+            max(
+                int(request.args.get("limit", 20)),
+                1
+            ),
+            100
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
+        CodingQuestion.query
+        .filter_by(
+            exam_id=exam.id
+        )
+        .order_by(
+            CodingQuestion.order_index.asc(),
+            CodingQuestion.id.asc()
+        )
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False
+        )
+    )
+
+    questions = pagination.items
 
     question_list = []
 
@@ -7174,12 +9089,42 @@ def trainer_coding_questions(user, exam_id):
             "error": "Coding exam not found"
         }), 404
 
-    questions = CodingQuestion.query.filter_by(
-        exam_id=exam.id
-    ).order_by(
-        CodingQuestion.order_index.asc(),
-        CodingQuestion.id.asc()
-    ).all()
+    try:
+        page = max(
+            int(request.args.get("page", 1)),
+            1
+        )
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+            max(
+                int(request.args.get("limit", 20)),
+                1
+            ),
+            100
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
+        CodingQuestion.query
+        .filter_by(
+            exam_id=exam.id
+        )
+        .order_by(
+            CodingQuestion.order_index.asc(),
+            CodingQuestion.id.asc()
+        )
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False
+        )
+    )
+
+    questions = pagination.items
 
     result = []
 
@@ -7216,7 +9161,7 @@ def trainer_coding_questions(user, exam_id):
             ]
         })
 
-    return jsonify({
+        return jsonify({
         "exam": {
             "id": exam.id,
             "title": exam.title,
@@ -7226,7 +9171,15 @@ def trainer_coding_questions(user, exam_id):
             "total_marks": exam.total_marks,
             "status": exam.status
         },
-        "questions": result
+        "questions": result,
+        "pagination": {
+            "page": pagination.page,
+            "limit": pagination.per_page,
+            "total": pagination.total,
+            "pages": pagination.pages,
+            "has_next": pagination.has_next,
+            "has_previous": pagination.has_prev
+        }
     })
 
 
@@ -7772,14 +9725,44 @@ def learner_coding_exams(user):
             "exams": []
         })
 
-    exams = CodingExam.query.filter(
-        CodingExam.course_id.in_(
-            enrolled_course_ids
-        ),
-        CodingExam.status == "published"
-    ).order_by(
-        CodingExam.id.desc()
-    ).all()
+    try:
+        page = max(
+            int(request.args.get("page", 1)),
+            1
+        )
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+            max(
+                int(request.args.get("limit", 20)),
+                1
+            ),
+            100
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
+        CodingExam.query
+        .filter(
+            CodingExam.course_id.in_(
+                enrolled_course_ids
+            ),
+            CodingExam.status == "published"
+        )
+        .order_by(
+            CodingExam.id.desc()
+        )
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False
+        )
+    )
+
+    exams = pagination.items
 
     result = []
 
@@ -7804,10 +9787,17 @@ def learner_coding_exams(user):
             ),
         })
 
-    return jsonify({
-        "exams": result
+        return jsonify({
+        "exams": result,
+        "pagination": {
+            "page": pagination.page,
+            "limit": pagination.per_page,
+            "total": pagination.total,
+            "pages": pagination.pages,
+            "has_next": pagination.has_next,
+            "has_previous": pagination.has_prev
+        }
     })
-
 # =========================================================
 # LEARNER - CODING EXAM HISTORY
 # =========================================================
@@ -7942,12 +9932,42 @@ def learner_coding_exam_history(user):
             "exams": []
         }), 200
 
-    exams = CodingExam.query.filter(
-        CodingExam.course_id.in_(enrolled_course_ids),
-        CodingExam.status == "published"
-    ).order_by(
-        CodingExam.id.desc()
-    ).all()
+    try:
+        page = max(
+            int(request.args.get("page", 1)),
+            1
+        )
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+            max(
+                int(request.args.get("limit", 20)),
+                1
+            ),
+            100
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
+        CodingExam.query
+        .filter(
+            CodingExam.course_id.in_(enrolled_course_ids),
+            CodingExam.status == "published"
+        )
+        .order_by(
+            CodingExam.id.desc()
+        )
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False
+        )
+    )
+
+    exams = pagination.items
 
     exam_history = []
 
@@ -8067,8 +10087,16 @@ def learner_coding_exam_history(user):
             "last_submitted_at": last_submitted_at
         })
 
-    return jsonify({
-        "exams": exam_history
+        return jsonify({
+        "exams": exam_history,
+        "pagination": {
+            "page": pagination.page,
+            "limit": pagination.per_page,
+            "total": pagination.total,
+            "pages": pagination.pages,
+            "has_next": pagination.has_next,
+            "has_previous": pagination.has_prev
+        }
     }), 200
 
 # ============================================================
@@ -8159,7 +10187,7 @@ def start_coding_exam_monitoring_session(user, exam_id):
 
     for previous_session in previous_sessions:
         previous_session.status = "abandoned"
-        previous_session.ended_at = datetime.utcnow()
+        previous_session.ended_at = datetime.now(timezone.utc)
 
     # --------------------------------------------------------
     # CREATE NEW MONITORING SESSION
@@ -8168,7 +10196,7 @@ def start_coding_exam_monitoring_session(user, exam_id):
     session = CodingExamSession(
         exam_id=exam.id,
         learner_id=learner.id,
-        started_at=datetime.utcnow(),
+        started_at=datetime.now(timezone.utc),
         status="active",
         camera_enabled=camera_enabled,
         microphone_enabled=microphone_enabled,
@@ -8352,7 +10380,7 @@ def record_coding_exam_monitoring_event(
             session_id=session.id,
             event_type=event_type,
             message=message,
-            event_time=datetime.utcnow(),
+            event_time=datetime.now(timezone.utc),
             metadata_json=metadata_json
         )
     )
@@ -8526,7 +10554,7 @@ def upload_coding_exam_monitoring_screenshot(
     # CREATE SAFE FILE NAME
     # --------------------------------------------------------
 
-    timestamp = datetime.utcnow().strftime(
+    timestamp = datetime.now(timezone.utc).strftime(
         "%Y%m%d_%H%M%S_%f"
     )
 
@@ -8563,7 +10591,7 @@ def upload_coding_exam_monitoring_screenshot(
     screenshot_record = CodingExamScreenshot(
         session_id=session.id,
         file_path=file_path,
-        captured_at=datetime.utcnow()
+        captured_at=datetime.now(timezone.utc)
     )
 
     db.session.add(
@@ -8577,7 +10605,7 @@ def upload_coding_exam_monitoring_screenshot(
             event_type="screenshot_captured",
             message=
                 "Random monitoring screenshot captured.",
-            event_time=datetime.utcnow(),
+            event_time=datetime.now(timezone.utc),
             metadata_json=json.dumps({
                 "screenshot_id":
                     screenshot_record.id
@@ -9125,12 +11153,42 @@ def trainer_coding_exam_submissions(user, exam_id):
     # GET SUBMISSIONS
     # --------------------------------------------------------
 
-    submissions = CodingSubmission.query.filter_by(
-        exam_id=exam.id
-    ).order_by(
-        CodingSubmission.submitted_at.desc(),
-        CodingSubmission.id.desc()
-    ).all()
+    try:
+        page = max(
+            int(request.args.get("page", 1)),
+            1
+        )
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+            max(
+                int(request.args.get("limit", 20)),
+                1
+            ),
+            100
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
+        CodingSubmission.query
+        .filter_by(
+            exam_id=exam.id
+        )
+        .order_by(
+            CodingSubmission.submitted_at.desc(),
+            CodingSubmission.id.desc()
+        )
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False
+        )
+    )
+
+    submissions = pagination.items
 
     # --------------------------------------------------------
     # BUILD RESPONSE
@@ -9237,26 +11295,39 @@ def trainer_coding_exam_submissions(user, exam_id):
     # SUMMARY
     # --------------------------------------------------------
 
-    total_submissions = len(
-        submissions
+    total_submissions = (
+        CodingSubmission.query
+        .filter_by(
+            exam_id=exam.id
+        )
+        .count()
     )
 
-    accepted_count = sum(
-        1
-        for submission in submissions
-        if submission.status == "accepted"
+    accepted_count = (
+        CodingSubmission.query
+        .filter_by(
+            exam_id=exam.id,
+            status="accepted"
+        )
+        .count()
     )
 
-    partial_count = sum(
-        1
-        for submission in submissions
-        if submission.status == "partial"
+    partial_count = (
+        CodingSubmission.query
+        .filter_by(
+            exam_id=exam.id,
+            status="partial"
+        )
+        .count()
     )
 
-    failed_count = sum(
-        1
-        for submission in submissions
-        if submission.status == "failed"
+    failed_count = (
+        CodingSubmission.query
+        .filter_by(
+            exam_id=exam.id,
+            status="failed"
+        )
+        .count()
     )
 
     return jsonify({
@@ -9278,7 +11349,16 @@ def trainer_coding_exam_submissions(user, exam_id):
             "failed": failed_count
         },
 
-        "submissions": result
+        "submissions": result,
+
+        "pagination": {
+            "page": pagination.page,
+            "limit": pagination.per_page,
+            "total": pagination.total,
+            "pages": pagination.pages,
+            "has_next": pagination.has_next,
+            "has_previous": pagination.has_prev
+        }
     }), 200
 
 # ============================================================
@@ -9342,14 +11422,41 @@ def trainer_coding_exam_monitoring(
     # GET MONITORING SESSIONS
     # --------------------------------------------------------
 
-    sessions = (
+    try:
+        page = max(
+            int(request.args.get("page", 1)),
+            1
+        )
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+            max(
+                int(request.args.get("limit", 20)),
+                1
+            ),
+            100
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    pagination = (
         CodingExamSession.query
-        .filter_by(exam_id=exam.id)
+        .filter_by(
+            exam_id=exam.id
+        )
         .order_by(
             CodingExamSession.started_at.desc()
         )
-        .all()
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False
+        )
     )
+
+    sessions = pagination.items
 
     result = []
 
@@ -9532,7 +11639,27 @@ def trainer_coding_exam_monitoring(
         },
 
         "sessions":
-            result
+            result,
+
+        "pagination": {
+            "page":
+                pagination.page,
+
+            "limit":
+                pagination.per_page,
+
+            "total":
+                pagination.total,
+
+            "pages":
+                pagination.pages,
+
+            "has_next":
+                pagination.has_next,
+
+            "has_previous":
+                pagination.has_prev
+        }
     }), 200
 
 # ============================================================

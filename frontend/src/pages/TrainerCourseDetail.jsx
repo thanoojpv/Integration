@@ -15,11 +15,13 @@ import {
   apiRequest,
   fetchAuthenticatedBlob
 } from '../services/api'
+import { useNotification } from '../context/NotificationContext'
 
 
 export default function TrainerCourseDetail() {
 
   const { courseId } = useParams()
+  const { showNotification } = useNotification()
 
 
   // =====================================================
@@ -269,8 +271,9 @@ export default function TrainerCourseDetail() {
       )
 
 
-      alert(
-        'Course updated successfully'
+      showNotification(
+        'Course updated successfully',
+        'success'
       )
 
 
@@ -287,7 +290,7 @@ export default function TrainerCourseDetail() {
       )
 
 
-      alert(
+      showNotification(
         err.message ||
         'Unable to update course'
       )
@@ -379,8 +382,9 @@ export default function TrainerCourseDetail() {
       )
 
 
-      alert(
-        'Module updated successfully'
+      showNotification(
+        'Module updated successfully',
+        'success'
       )
 
 
@@ -398,7 +402,7 @@ export default function TrainerCourseDetail() {
       )
 
 
-      alert(
+      showNotification(
         err.message ||
         'Unable to update module'
       )
@@ -613,8 +617,9 @@ export default function TrainerCourseDetail() {
       )
 
 
-      alert(
-        `Video uploaded successfully!\nDuration: ${formattedDuration}`
+      showNotification(
+        `Video uploaded successfully!\nDuration: ${formattedDuration}`,
+        'success'
       )
 
 
@@ -628,7 +633,7 @@ export default function TrainerCourseDetail() {
       )
 
 
-      alert(
+      showNotification(
         err.message ||
         'Unable to upload video'
       )
@@ -690,10 +695,10 @@ export default function TrainerCourseDetail() {
       )
 
 
-      alert(
-        `PDF uploaded successfully!\n${file.name}`
+      showNotification(
+        `PDF uploaded successfully!\n${file.name}`,
+        'success'
       )
-
 
       await loadCourse()
 
@@ -705,7 +710,7 @@ export default function TrainerCourseDetail() {
       )
 
 
-      alert(
+      showNotification(
         err.message ||
         'Unable to upload PDF'
       )
@@ -764,8 +769,9 @@ export default function TrainerCourseDetail() {
       )
 
 
-      alert(
-        'Duration saved successfully'
+      showNotification(
+        'Duration saved successfully',
+        'success'
       )
 
 
@@ -779,7 +785,7 @@ export default function TrainerCourseDetail() {
       )
 
 
-      alert(
+      showNotification(
         err.message ||
         'Unable to save duration'
       )
@@ -863,7 +869,7 @@ export default function TrainerCourseDetail() {
       )
 
 
-      alert(
+      showNotification(
         err.message ||
         'Unable to open resource'
       )
@@ -927,8 +933,9 @@ export default function TrainerCourseDetail() {
       )
 
 
-      alert(
-        `${resourceType} removed successfully`
+      showNotification(
+        `${resourceType} removed successfully`,
+        'success'
       )
 
 
@@ -942,7 +949,7 @@ export default function TrainerCourseDetail() {
       )
 
 
-      alert(
+      showNotification(
         err.message ||
         'Unable to delete resource'
       )

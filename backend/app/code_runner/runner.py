@@ -1,15 +1,18 @@
+import logging
 import os
 import subprocess
 import tempfile
 import shutil
 
+logger = logging.getLogger(__name__)
 
 # ============================================================
 # DOCKER CONFIGURATION
 # ============================================================
 
-# Docker Desktop executable on your Mac
-DOCKER_COMMAND = "/Users/thanooj/.docker/bin/docker"
+# Resolve Docker from the system PATH.
+# This works across macOS, Linux, CI, and containerized environments.
+DOCKER_COMMAND = shutil.which("docker")
 
 # Docker images
 PYTHON_IMAGE = "python:3.12-alpine"
@@ -35,7 +38,7 @@ def docker_available():
     Check whether Docker is available.
     """
 
-    if not os.path.isfile(DOCKER_COMMAND):
+    if not DOCKER_COMMAND:
         return False
 
     try:
@@ -317,10 +320,12 @@ def run_docker_code(
 
     except Exception as error:
 
+        logger.exception("Code runner internal error")
+
         return {
             "status": "error",
             "stdout": "",
-            "stderr": str(error),
+            "stderr": "Code execution could not be completed. Please try again.",
             "execution_time": 0,
         }
 
