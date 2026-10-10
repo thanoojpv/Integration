@@ -2,6 +2,7 @@ from app import db
 from datetime import datetime, timedelta, timezone
 from app.auth import create_password_hash, make_token
 from app.models import (
+    Batch,
     Course,
     Certificate,
     Enrollment,
@@ -48,6 +49,8 @@ def test_my_learning_rejects_wrong_role(client, app):
 
         db.session.add(user)
         db.session.commit()
+
+    
 
         token = make_token(user)
 
@@ -1401,3 +1404,1162 @@ def test_login_rate_limit(client, app):
     )
 
     assert responses[10].status_code == 429
+
+def test_admin_can_add_learner_to_batch(client, app):
+    with app.app_context():
+        # Admin
+        admin_user = User(
+            name="Batch Admin",
+            email="batch-admin@example.com",
+            password_hash=create_password_hash(
+                "TestPassword123!"
+            ),
+            role="admin",
+            status="active",
+        )
+
+        # Trainer
+        trainer_user = User(
+            name="Batch Trainer",
+            email="batch-trainer@example.com",
+            password_hash=create_password_hash(
+                "TestPassword123!"
+            ),
+            role="trainer",
+            status="active",
+        )
+
+        # Learner
+        learner_user = User(
+            name="Batch Learner",
+            email="batch-learner@example.com",
+            password_hash=create_password_hash(
+                "TestPassword123!"
+            ),
+            role="learner",
+            status="active",
+        )
+
+        db.session.add_all([
+            admin_user,
+            trainer_user,
+            learner_user,
+        ])
+        db.session.commit()
+
+        trainer = Trainer(
+            user_id=trainer_user.id,
+            status="active",
+        )
+
+        learner = Learner(
+            user_id=learner_user.id,
+            status="active",
+        )
+
+        db.session.add_all([
+            trainer,
+            learner,
+        ])
+        db.session.commit()
+
+        course = Course(
+            id="batch-test-course",
+            trainer_id=trainer.id,
+            title="Batch Test Course",
+            level="Beginner",
+            description="Batch assignment test",
+            published=True,
+        )
+
+        db.session.add(course)
+        db.session.commit()
+
+        batch = Batch(
+            name="Batch Test 1",
+            course_id=course.id,
+            trainer_id=trainer.id,
+            start_date=datetime(2026, 10, 1).date(),
+            end_date=datetime(2026, 12, 31).date(),
+            status="active",
+        )
+
+        db.session.add(batch)
+
+        enrollment = Enrollment(
+            learner_id=learner.id,
+            course_id=course.id,
+            status="active",
+        )
+
+        db.session.add(enrollment)
+        db.session.commit()
+
+        token = make_token(admin_user)
+
+        learner_id = learner.id
+        batch_id = batch.id
+
+    response = client.post(
+        f"/api/admin/batches/{batch_id}/learners",
+        json={
+            "learner_id": learner_id,
+        },
+        headers={
+            "Authorization": f"Bearer {token}",
+        },
+    )
+
+    assert response.status_code == 200
+
+    data = response.get_json()
+
+    assert data["message"] == (
+        "Learner added to batch successfully"
+    )
+
+    assert data["learner"]["id"] == learner_id
+    assert data["learner"]["batch_id"] == batch_id
+
+    with app.app_context():
+        updated_learner = db.session.get(
+            Learner,
+            learner_id,
+        )
+
+        assert updated_learner.batch_id == batch_id
+
+
+def test_admin_cannot_add_non_enrolled_learner_to_batch(
+    client,
+    app,
+):
+    with app.app_context():
+        admin_user = User(
+            name="Enrollment Admin",
+            email="enrollment-admin@example.com",
+            password_hash=create_password_hash(
+                "TestPassword123!"
+            ),
+            role="admin",
+            status="active",
+        )
+
+        trainer_user = User(
+            name="Enrollment Trainer",
+            email="enrollment-trainer@example.com",
+            password_hash=create_password_hash(
+                "TestPassword123!"
+            ),
+            role="trainer",
+            status="active",
+        )
+
+        learner_user = User(
+            name="Non Enrolled Learner",
+            email="non-enrolled@example.com",
+            password_hash=create_password_hash(
+                "TestPassword123!"
+            ),
+            role="learner",
+            status="active",
+        )
+
+        db.session.add_all([
+            admin_user,
+            trainer_user,
+            learner_user,
+        ])
+        db.session.commit()
+
+        trainer = Trainer(
+            user_id=trainer_user.id,
+            status="active",
+        )
+
+        learner = Learner(
+            user_id=learner_user.id,
+            status="active",
+        )
+
+        db.session.add_all([
+            trainer,
+            learner,
+        ])
+        db.session.commit()
+
+        course = Course(
+            id="non-enrolled-course",
+            trainer_id=trainer.id,
+            title="Non Enrolled Course",
+            level="Beginner",
+            description="Test course",
+            published=True,
+        )
+
+        db.session.add(course)
+        db.session.commit()
+
+        batch = Batch(
+            name="Enrollment Batch",
+            course_id=course.id,
+            trainer_id=trainer.id,
+            status="active",
+        )
+
+        db.session.add(batch)
+        db.session.commit()
+
+        token = make_token(admin_user)
+
+        batch_id = batch.id
+        learner_id = learner.id
+
+    response = client.post(
+        f"/api/admin/batches/{batch_id}/learners",
+        json={
+            "learner_id": learner_id,
+        },
+        headers={
+            "Authorization": f"Bearer {token}",
+        },
+    )
+
+    assert response.status_code == 400
+
+    data = response.get_json()
+
+    assert data["error"] == (
+        "Learner must be actively enrolled in the batch course"
+    )
+
+
+def test_admin_can_view_batch_roster(client, app):
+    with app.app_context():
+        admin_user = User(
+            name="Roster Admin",
+            email="roster-admin@example.com",
+            password_hash=create_password_hash(
+                "TestPassword123!"
+            ),
+            role="admin",
+            status="active",
+        )
+
+        trainer_user = User(
+            name="Roster Trainer",
+            email="roster-trainer@example.com",
+            password_hash=create_password_hash(
+                "TestPassword123!"
+            ),
+            role="trainer",
+            status="active",
+        )
+
+        learner_user = User(
+            name="Roster Learner",
+            email="roster-learner@example.com",
+            password_hash=create_password_hash(
+                "TestPassword123!"
+            ),
+            role="learner",
+            status="active",
+        )
+
+        db.session.add_all([
+            admin_user,
+            trainer_user,
+            learner_user,
+        ])
+        db.session.commit()
+
+        trainer = Trainer(
+            user_id=trainer_user.id,
+            status="active",
+        )
+
+        learner = Learner(
+            user_id=learner_user.id,
+            status="active",
+        )
+
+        db.session.add_all([
+            trainer,
+            learner,
+        ])
+        db.session.commit()
+
+        course = Course(
+            id="roster-test-course",
+            trainer_id=trainer.id,
+            title="Roster Test Course",
+            level="Beginner",
+            description="Roster test",
+            published=True,
+        )
+
+        db.session.add(course)
+        db.session.commit()
+
+        batch = Batch(
+            name="Roster Batch",
+            course_id=course.id,
+            trainer_id=trainer.id,
+            status="active",
+        )
+
+        db.session.add(batch)
+        db.session.flush()
+
+        learner.batch_id = batch.id
+
+        db.session.commit()
+
+        token = make_token(admin_user)
+
+        batch_id = batch.id
+        learner_id = learner.id
+
+    response = client.get(
+        f"/api/admin/batches/{batch_id}/learners",
+        headers={
+            "Authorization": f"Bearer {token}",
+        },
+    )
+
+    assert response.status_code == 200
+
+    data = response.get_json()
+
+    assert data["batch"]["id"] == batch_id
+    assert data["total"] == 1
+
+    assert data["learners"][0]["id"] == learner_id
+    assert data["learners"][0]["name"] == "Roster Learner"
+
+def test_trainer_can_view_batch_attendance(client, app):
+    from app import db
+    from app.auth import make_token
+    from app.models import User, Trainer, Batch, Learner
+
+    trainer_user = User(
+    name="Attendance Trainer",
+        email="attendance_trainer@example.com",
+        password_hash=create_password_hash(
+            "password"
+        ),
+        role="trainer",
+        status="active",
+    )
+    db.session.add(trainer_user)
+    db.session.flush()
+
+    trainer = Trainer(
+        user_id=trainer_user.id,
+        status="active",
+    )
+    db.session.add(trainer)
+    db.session.flush()
+
+    batch = Batch(
+        name="Attendance Batch",
+        trainer_id=trainer.id,
+        status="active",
+    )
+    db.session.add(batch)
+    db.session.flush()
+
+    learner_user = User(
+        name="Attendance Learner",
+        email="attendance_learner@example.com",
+        password_hash=create_password_hash(
+            "password"
+        ),
+        role="learner",
+        status="active",
+    )
+    db.session.add(learner_user)
+    db.session.flush()
+
+    learner = Learner(
+        user_id=learner_user.id,
+        batch_id=batch.id,
+        status="active",
+    )
+    db.session.add(learner)
+
+    db.session.commit()
+
+    token = make_token(trainer_user)
+
+    response = client.get(
+        f"/api/trainer/batches/{batch.id}/attendance?date=2026-10-03",
+        headers={
+            "Authorization": f"Bearer {token}",
+        },
+    )
+
+    assert response.status_code == 200
+
+    data = response.get_json()
+
+    assert data["batch"]["id"] == batch.id
+    assert data["batch"]["name"] == "Attendance Batch"
+    assert data["date"] == "2026-10-03"
+    assert data["total"] == 1
+
+    assert data["learners"][0]["learner_id"] == learner.id
+    assert data["learners"][0]["name"] == "Attendance Learner"
+    assert data["learners"][0]["status"] is None
+
+def test_trainer_can_mark_batch_attendance(client, app):
+    from app import db
+    from app.auth import make_token
+    from app.models import (
+        User,
+        Trainer,
+        Batch,
+        Learner,
+        Attendance,
+    )
+
+    trainer_user = User(
+        name="Attendance Marker",
+        email="attendance_marker@example.com",
+        password_hash=create_password_hash(
+            "password"
+        ),
+        role="trainer",
+        status="active",
+    )
+    db.session.add(trainer_user)
+    db.session.flush()
+
+    trainer = Trainer(
+        user_id=trainer_user.id,
+        status="active",
+    )
+    db.session.add(trainer)
+    db.session.flush()
+
+    batch = Batch(
+        name="Attendance Marking Batch",
+        trainer_id=trainer.id,
+        status="active",
+    )
+    db.session.add(batch)
+    db.session.flush()
+
+    learner_user_1 = User(
+        name="Present Learner",
+        email="present_learner@example.com",
+        password_hash=create_password_hash(
+            "password"
+        ),
+        role="learner",
+        status="active",
+    )
+    learner_user_2 = User(
+        name="Late Learner",
+        email="late_learner@example.com",
+        password_hash=create_password_hash(
+            "password"
+        ),
+        role="learner",
+        status="active",
+    )
+
+    db.session.add_all([
+        learner_user_1,
+        learner_user_2,
+    ])
+    db.session.flush()
+
+    learner_1 = Learner(
+        user_id=learner_user_1.id,
+        batch_id=batch.id,
+        status="active",
+    )
+    learner_2 = Learner(
+        user_id=learner_user_2.id,
+        batch_id=batch.id,
+        status="active",
+    )
+
+    db.session.add_all([
+        learner_1,
+        learner_2,
+    ])
+    db.session.commit()
+
+    token = make_token(trainer_user)
+
+    response = client.post(
+        f"/api/trainer/batches/{batch.id}/attendance",
+        json={
+            "date": "2026-10-03",
+            "attendance": [
+                {
+                    "learner_id": learner_1.id,
+                    "status": "present",
+                },
+                {
+                    "learner_id": learner_2.id,
+                    "status": "late",
+                },
+            ],
+        },
+        headers={
+            "Authorization": f"Bearer {token}",
+        },
+    )
+
+    assert response.status_code == 200
+
+    data = response.get_json()
+
+    assert data["message"] == (
+        "Attendance saved successfully"
+    )
+    assert data["batch_id"] == batch.id
+    assert data["date"] == "2026-10-03"
+    assert len(data["attendance"]) == 2
+
+    record_1 = Attendance.query.filter_by(
+        learner_id=learner_1.id,
+        batch_id=batch.id,
+        date="2026-10-03",
+    ).first()
+
+    record_2 = Attendance.query.filter_by(
+        learner_id=learner_2.id,
+        batch_id=batch.id,
+        date="2026-10-03",
+    ).first()
+
+    assert record_1 is not None
+    assert record_1.status == "present"
+    assert record_1.marked_by == trainer_user.id
+
+    assert record_2 is not None
+    assert record_2.status == "late"
+    assert record_2.marked_by == trainer_user.id
+
+def test_trainer_cannot_mark_attendance_for_another_trainers_batch(
+    client,
+    app,
+):
+    from app import db
+    from app.auth import make_token
+    from app.models import User, Trainer, Batch, Learner
+
+    trainer_user_1 = User(
+        name="Trainer One",
+        email="trainer_one_attendance@example.com",
+        password_hash=create_password_hash("password"),
+        role="trainer",
+        status="active",
+    )
+
+    trainer_user_2 = User(
+        name="Trainer Two",
+        email="trainer_two_attendance@example.com",
+        password_hash=create_password_hash("password"),
+        role="trainer",
+        status="active",
+    )
+
+    db.session.add_all([
+        trainer_user_1,
+        trainer_user_2,
+    ])
+    db.session.flush()
+
+    trainer_1 = Trainer(
+        user_id=trainer_user_1.id,
+        status="active",
+    )
+
+    trainer_2 = Trainer(
+        user_id=trainer_user_2.id,
+        status="active",
+    )
+
+    db.session.add_all([
+        trainer_1,
+        trainer_2,
+    ])
+    db.session.flush()
+
+    batch = Batch(
+        name="Trainer Two Batch",
+        trainer_id=trainer_2.id,
+        status="active",
+    )
+
+    db.session.add(batch)
+    db.session.flush()
+
+    learner_user = User(
+        name="Protected Learner",
+        email="protected_learner@example.com",
+        password_hash=create_password_hash("password"),
+        role="learner",
+        status="active",
+    )
+
+    db.session.add(learner_user)
+    db.session.flush()
+
+    learner = Learner(
+        user_id=learner_user.id,
+        batch_id=batch.id,
+        status="active",
+    )
+
+    db.session.add(learner)
+    db.session.commit()
+
+    token = make_token(trainer_user_1)
+
+    response = client.post(
+        f"/api/trainer/batches/{batch.id}/attendance",
+        json={
+            "date": "2026-10-03",
+            "attendance": [
+                {
+                    "learner_id": learner.id,
+                    "status": "present",
+                }
+            ],
+        },
+        headers={
+            "Authorization": f"Bearer {token}",
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.get_json()["error"] == "Batch not found"
+
+def test_admin_can_view_attendance_and_summary(client, app):
+    from app.models import Attendance
+    with app.app_context():
+        admin_user = User(
+            name="Attendance Admin",
+            email="attendance-admin@example.com",
+            password_hash=create_password_hash(
+                "TestPassword123!"
+            ),
+            role="admin",
+            status="active",
+        )
+
+        trainer_user = User(
+            name="Attendance Trainer Admin Test",
+            email="attendance-trainer-admin-test@example.com",
+            password_hash=create_password_hash(
+                "TestPassword123!"
+            ),
+            role="trainer",
+            status="active",
+        )
+
+        learner_user = User(
+            name="Attendance Summary Learner",
+            email="attendance-summary-learner@example.com",
+            password_hash=create_password_hash(
+                "TestPassword123!"
+            ),
+            role="learner",
+            status="active",
+        )
+
+        db.session.add_all([
+            admin_user,
+            trainer_user,
+            learner_user,
+        ])
+        db.session.commit()
+
+        trainer = Trainer(
+            user_id=trainer_user.id,
+            status="active",
+        )
+
+        db.session.add(trainer)
+        db.session.commit()
+
+        batch = Batch(
+            name="Attendance Admin Batch",
+            trainer_id=trainer.id,
+            start_date=datetime(2026, 10, 1).date(),
+            end_date=datetime(2026, 12, 31).date(),
+            status="active",
+        )
+
+        db.session.add(batch)
+        db.session.commit()
+
+        learner = Learner(
+            user_id=learner_user.id,
+            batch_id=batch.id,
+            status="active",
+        )
+
+        db.session.add(learner)
+        db.session.commit()
+
+        attendance_records = [
+            Attendance(
+                learner_id=learner.id,
+                batch_id=batch.id,
+                date=datetime(2026, 10, 1).date(),
+                status="present",
+                marked_by=trainer_user.id,
+            ),
+            Attendance(
+                learner_id=learner.id,
+                batch_id=batch.id,
+                date=datetime(2026, 10, 2).date(),
+                status="late",
+                marked_by=trainer_user.id,
+            ),
+            Attendance(
+                learner_id=learner.id,
+                batch_id=batch.id,
+                date=datetime(2026, 10, 3).date(),
+                status="absent",
+                marked_by=trainer_user.id,
+            ),
+        ]
+
+        db.session.add_all(attendance_records)
+        db.session.commit()
+
+        token = make_token(admin_user)
+
+        batch_id = batch.id
+        learner_id = learner.id
+
+    response = client.get(
+        f"/api/admin/attendance?batch_id={batch_id}",
+        headers={
+            "Authorization": f"Bearer {token}",
+        },
+    )
+
+    assert response.status_code == 200
+
+    data = response.get_json()
+
+    assert data["pagination"]["total"] == 3
+    assert len(data["attendance"]) == 3
+
+    response = client.get(
+        f"/api/admin/attendance/summary?batch_id={batch_id}",
+        headers={
+            "Authorization": f"Bearer {token}",
+        },
+    )
+
+    assert response.status_code == 200
+
+    data = response.get_json()
+
+    assert data["total"] == 1
+
+    summary = data["learners"][0]
+
+    assert summary["learner_id"] == learner_id
+    assert summary["total"] == 3
+    assert summary["present"] == 1
+    assert summary["late"] == 1
+    assert summary["absent"] == 1
+    assert summary["attendance_percentage"] == 66.67
+
+def test_admin_can_edit_attendance(client, app):
+    from app.models import Attendance
+
+    with app.app_context():
+        admin_user = User(
+            name="Attendance Edit Admin",
+            email="attendance-edit-admin@example.com",
+            password_hash=create_password_hash(
+                "TestPassword123!"
+            ),
+            role="admin",
+            status="active",
+        )
+
+        trainer_user = User(
+            name="Attendance Edit Trainer",
+            email="attendance-edit-trainer@example.com",
+            password_hash=create_password_hash(
+                "TestPassword123!"
+            ),
+            role="trainer",
+            status="active",
+        )
+
+        learner_user = User(
+            name="Attendance Edit Learner",
+            email="attendance-edit-learner@example.com",
+            password_hash=create_password_hash(
+                "TestPassword123!"
+            ),
+            role="learner",
+            status="active",
+        )
+
+        db.session.add_all([
+            admin_user,
+            trainer_user,
+            learner_user,
+        ])
+        db.session.commit()
+
+        trainer = Trainer(
+            user_id=trainer_user.id,
+            status="active",
+        )
+        db.session.add(trainer)
+        db.session.commit()
+
+        batch = Batch(
+            name="Attendance Edit Batch",
+            trainer_id=trainer.id,
+            status="active",
+        )
+        db.session.add(batch)
+        db.session.commit()
+
+        learner = Learner(
+            user_id=learner_user.id,
+            batch_id=batch.id,
+            status="active",
+        )
+        db.session.add(learner)
+        db.session.commit()
+
+        attendance = Attendance(
+            learner_id=learner.id,
+            batch_id=batch.id,
+            date=datetime(2026, 10, 3).date(),
+            status="present",
+            marked_by=trainer_user.id,
+        )
+
+        db.session.add(attendance)
+        db.session.commit()
+
+        attendance_id = attendance.id
+
+        token = make_token(admin_user)
+
+    response = client.put(
+        f"/api/admin/attendance/{attendance_id}",
+        json={
+            "status": "absent",
+        },
+        headers={
+            "Authorization": f"Bearer {token}",
+        },
+    )
+
+    assert response.status_code == 200
+
+    data = response.get_json()
+
+    assert data["message"] == (
+        "Attendance updated successfully"
+    )
+
+    assert data["attendance"]["id"] == attendance_id
+    assert data["attendance"]["status"] == "absent"
+    assert data["attendance"]["marked_by"] == admin_user.id
+
+    with app.app_context():
+        updated = db.session.get(
+            Attendance,
+            attendance_id,
+        )
+
+        assert updated is not None
+        assert updated.status == "absent"
+        assert updated.marked_by == admin_user.id
+
+def test_admin_can_edit_attendance(client, app):
+    from app.models import Attendance
+
+    with app.app_context():
+        admin_user = User(
+            name="Attendance Edit Admin",
+            email="attendance-edit-admin@example.com",
+            password_hash=create_password_hash(
+                "TestPassword123!"
+            ),
+            role="admin",
+            status="active",
+        )
+
+        trainer_user = User(
+            name="Attendance Edit Trainer",
+            email="attendance-edit-trainer@example.com",
+            password_hash=create_password_hash(
+                "TestPassword123!"
+            ),
+            role="trainer",
+            status="active",
+        )
+
+        learner_user = User(
+            name="Attendance Edit Learner",
+            email="attendance-edit-learner@example.com",
+            password_hash=create_password_hash(
+                "TestPassword123!"
+            ),
+            role="learner",
+            status="active",
+        )
+
+        db.session.add_all([
+            admin_user,
+            trainer_user,
+            learner_user,
+        ])
+        db.session.commit()
+
+        trainer = Trainer(
+            user_id=trainer_user.id,
+            status="active",
+        )
+        db.session.add(trainer)
+        db.session.commit()
+
+        batch = Batch(
+            name="Attendance Edit Batch",
+            trainer_id=trainer.id,
+            status="active",
+        )
+        db.session.add(batch)
+        db.session.commit()
+
+        learner = Learner(
+            user_id=learner_user.id,
+            batch_id=batch.id,
+            status="active",
+        )
+        db.session.add(learner)
+        db.session.commit()
+
+        attendance = Attendance(
+            learner_id=learner.id,
+            batch_id=batch.id,
+            date=datetime(2026, 10, 3).date(),
+            status="present",
+            marked_by=trainer_user.id,
+        )
+
+        db.session.add(attendance)
+        db.session.commit()
+
+        attendance_id = attendance.id
+
+        token = make_token(admin_user)
+
+    response = client.put(
+        f"/api/admin/attendance/{attendance_id}",
+        json={
+            "status": "absent",
+        },
+        headers={
+            "Authorization": f"Bearer {token}",
+        },
+    )
+
+    assert response.status_code == 200
+
+    data = response.get_json()
+
+    assert data["message"] == (
+        "Attendance updated successfully"
+    )
+
+    assert data["attendance"]["id"] == attendance_id
+    assert data["attendance"]["status"] == "absent"
+    assert data["attendance"]["marked_by"] == admin_user.id
+
+    with app.app_context():
+        updated = db.session.get(
+            Attendance,
+            attendance_id,
+        )
+
+        assert updated is not None
+        assert updated.status == "absent"
+        assert updated.marked_by == admin_user.id
+
+def test_learner_can_view_own_attendance_history(client, app):
+    from app.models import Attendance
+
+    with app.app_context():
+        learner_user = User(
+            name="Attendance History Learner",
+            email="attendance-history-learner@example.com",
+            password_hash=create_password_hash(
+                "TestPassword123!"
+            ),
+            role="learner",
+            status="active",
+        )
+
+        other_learner_user = User(
+            name="Other Attendance Learner",
+            email="other-attendance-learner@example.com",
+            password_hash=create_password_hash(
+                "TestPassword123!"
+            ),
+            role="learner",
+            status="active",
+        )
+
+        trainer_user = User(
+            name="Attendance History Trainer",
+            email="attendance-history-trainer@example.com",
+            password_hash=create_password_hash(
+                "TestPassword123!"
+            ),
+            role="trainer",
+            status="active",
+        )
+
+        db.session.add_all([
+            learner_user,
+            other_learner_user,
+            trainer_user,
+        ])
+        db.session.commit()
+
+        trainer = Trainer(
+            user_id=trainer_user.id,
+            status="active",
+        )
+
+        db.session.add(trainer)
+        db.session.commit()
+
+        batch = Batch(
+            name="Attendance History Batch",
+            trainer_id=trainer.id,
+            status="active",
+        )
+
+        other_batch = Batch(
+            name="Other Attendance Batch",
+            trainer_id=trainer.id,
+            status="active",
+        )
+
+        db.session.add_all([
+            batch,
+            other_batch,
+        ])
+        db.session.commit()
+
+        learner = Learner(
+            user_id=learner_user.id,
+            batch_id=batch.id,
+            status="active",
+        )
+
+        other_learner = Learner(
+            user_id=other_learner_user.id,
+            batch_id=other_batch.id,
+            status="active",
+        )
+
+        db.session.add_all([
+            learner,
+            other_learner,
+        ])
+        db.session.commit()
+
+        db.session.add_all([
+            Attendance(
+                learner_id=learner.id,
+                batch_id=batch.id,
+                date=datetime(2026, 10, 1).date(),
+                status="present",
+                marked_by=trainer_user.id,
+            ),
+            Attendance(
+                learner_id=learner.id,
+                batch_id=batch.id,
+                date=datetime(2026, 10, 2).date(),
+                status="late",
+                marked_by=trainer_user.id,
+            ),
+            Attendance(
+                learner_id=learner.id,
+                batch_id=batch.id,
+                date=datetime(2026, 10, 3).date(),
+                status="absent",
+                marked_by=trainer_user.id,
+            ),
+            Attendance(
+                learner_id=other_learner.id,
+                batch_id=other_batch.id,
+                date=datetime(2026, 10, 4).date(),
+                status="present",
+                marked_by=trainer_user.id,
+            ),
+        ])
+
+        db.session.commit()
+
+        learner_id = learner.id
+        other_learner_id = other_learner.id
+
+        token = make_token(learner_user)
+
+    response = client.get(
+        "/api/learner/attendance",
+        headers={
+            "Authorization": f"Bearer {token}",
+        },
+    )
+
+    assert response.status_code == 200
+
+    data = response.get_json()
+
+    assert data["summary"]["total"] == 3
+    assert data["summary"]["present"] == 1
+    assert data["summary"]["late"] == 1
+    assert data["summary"]["absent"] == 1
+    assert data["summary"]["attendance_percentage"] == 66.67
+
+    assert len(data["history"]) == 3
+
+    returned_ids = {
+        record["id"]
+        for record in data["history"]
+    }
+
+    with app.app_context():
+        own_ids = {
+            record.id
+            for record in Attendance.query.filter_by(
+                learner_id=learner_id
+            ).all()
+        }
+
+        other_ids = {
+            record.id
+            for record in Attendance.query.filter_by(
+                learner_id=other_learner_id
+            ).all()
+        }
+
+    assert returned_ids == own_ids
+    assert returned_ids.isdisjoint(other_ids)

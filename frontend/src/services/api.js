@@ -1,11 +1,65 @@
 const API_BASE_URL =
     import.meta.env.VITE_API_BASE_URL
 
+
+// =====================================================
+// NORMALIZE API ENDPOINT
+// =====================================================
+//
+// Supports all of these:
+//
+// /auth/login
+// /api/auth/login
+// auth/login
+// api/auth/login
+//
+// Final result:
+//
+// /api/auth/login
+// =====================================================
+
+function normalizeEndpoint(endpoint) {
+
+    if (!endpoint) {
+        return '/api'
+    }
+
+
+    let normalizedEndpoint =
+        String(endpoint).trim()
+
+
+    // Make sure endpoint starts with /
+    if (!normalizedEndpoint.startsWith('/')) {
+        normalizedEndpoint =
+            `/${normalizedEndpoint}`
+    }
+
+
+    // Already contains /api
+    if (normalizedEndpoint === '/api') {
+        return normalizedEndpoint
+    }
+
+
+    if (normalizedEndpoint.startsWith('/api/')) {
+        return normalizedEndpoint
+    }
+
+
+    // Add /api
+    return `/api${normalizedEndpoint}`
+}
+
+
 // =====================================================
 // COMMON API REQUEST
 // =====================================================
 
-export async function apiRequest(endpoint, options = {}) {
+export async function apiRequest(
+    endpoint,
+    options = {}
+) {
 
     const token =
         localStorage.getItem('access_token')
@@ -17,12 +71,16 @@ export async function apiRequest(endpoint, options = {}) {
 
 
     // -------------------------------------------------
-    // IMPORTANT:
+    // CONTENT TYPE
+    // -------------------------------------------------
+    //
     // Do NOT manually set Content-Type for FormData.
-    // Browser must set multipart/form-data boundary.
+    // Browser creates the multipart boundary.
     // -------------------------------------------------
 
-    if (!(options.body instanceof FormData)) {
+    if (
+        !(options.body instanceof FormData)
+    ) {
 
         headers['Content-Type'] =
             'application/json'
@@ -30,7 +88,14 @@ export async function apiRequest(endpoint, options = {}) {
     }
 
 
-    if (token && !headers.Authorization) {
+    // -------------------------------------------------
+    // AUTHORIZATION
+    // -------------------------------------------------
+
+    if (
+        token &&
+        !headers.Authorization
+    ) {
 
         headers.Authorization =
             `Bearer ${token}`
@@ -38,9 +103,29 @@ export async function apiRequest(endpoint, options = {}) {
     }
 
 
+    // -------------------------------------------------
+    // NORMALIZE ENDPOINT
+    // -------------------------------------------------
+
+    const normalizedEndpoint =
+        normalizeEndpoint(endpoint)
+
+
+    // -------------------------------------------------
+    // FULL URL
+    // -------------------------------------------------
+
+    const url =
+        `${API_BASE_URL}${normalizedEndpoint}`
+
+
+    // -------------------------------------------------
+    // REQUEST
+    // -------------------------------------------------
+
     const response =
         await fetch(
-            `${API_BASE_URL}${endpoint}`,
+            url,
             {
                 ...options,
                 headers
@@ -48,18 +133,26 @@ export async function apiRequest(endpoint, options = {}) {
         )
 
 
+    // -------------------------------------------------
+    // RESPONSE
+    // -------------------------------------------------
+
     const data =
         await response
             .json()
             .catch(() => null)
 
 
+    // -------------------------------------------------
+    // ERROR
+    // -------------------------------------------------
+
     if (!response.ok) {
 
         throw new Error(
             data?.message ||
             data?.error ||
-            'Request failed'
+            `Request failed (${response.status})`
         )
 
     }
@@ -75,13 +168,15 @@ export async function apiRequest(endpoint, options = {}) {
 // =====================================================
 //
 // Used for:
+//
 // - Trainer viewing videos
 // - Trainer viewing PDFs
 // - Learner viewing videos
 // - Learner viewing PDFs
+// - Invoice PDF downloads
 //
 // Normal <a href=""> cannot send JWT.
-// This function sends the Authorization header.
+// This function sends Authorization manually.
 // =====================================================
 
 export async function fetchAuthenticatedBlob(
@@ -101,11 +196,32 @@ export async function fetchAuthenticatedBlob(
     }
 
 
+    // -------------------------------------------------
+    // NORMALIZE ENDPOINT
+    // -------------------------------------------------
+
+    const normalizedEndpoint =
+        normalizeEndpoint(endpoint)
+
+
+    // -------------------------------------------------
+    // FULL URL
+    // -------------------------------------------------
+
+    const url =
+        `${API_BASE_URL}${normalizedEndpoint}`
+
+
+    // -------------------------------------------------
+    // REQUEST
+    // -------------------------------------------------
+
     const response =
         await fetch(
-            `${API_BASE_URL}${endpoint}`,
+            url,
             {
                 method: 'GET',
+
                 headers: {
                     Authorization:
                         `Bearer ${token}`
@@ -114,15 +230,21 @@ export async function fetchAuthenticatedBlob(
         )
 
 
+    // -------------------------------------------------
+    // ERROR
+    // -------------------------------------------------
+
     if (!response.ok) {
 
         let message =
             'Unable to open resource'
 
+
         try {
 
             const data =
                 await response.json()
+
 
             message =
                 data?.error ||
@@ -140,6 +262,10 @@ export async function fetchAuthenticatedBlob(
 
     }
 
+
+    // -------------------------------------------------
+    // RETURN FILE
+    // -------------------------------------------------
 
     return await response.blob()
 

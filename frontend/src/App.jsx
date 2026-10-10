@@ -27,6 +27,8 @@ import AdminDashboard from './pages/AdminDashboard'
 import CreateAccounts from './pages/CreateAccounts'
 import Leaderboard from './pages/Leaderboard'
 import AdminCertificates from './pages/AdminCertificates'
+import AdminBatches from './pages/AdminBatches'
+
 
 
 // =========================================================
@@ -36,6 +38,9 @@ import AdminCertificates from './pages/AdminCertificates'
 import TrainerExams from './pages/TrainerExams'
 import TrainerDashboard from './pages/TrainerDashboard'
 import TrainerCourseDetail from './pages/TrainerCourseDetail'
+import TrainerAttendance from './pages/TrainerAttendance'
+import AdminAttendance from './pages/AdminAttendance'
+import AdminCsvImport from './pages/AdminCsvImport'
 import CreateCourse from './pages/CreateCourse'
 
 import TrainerCodingExams from './pages/TrainerCodingExams'
@@ -63,10 +68,13 @@ import CourseDetail from './pages/CourseDetail'
 import LessonPlayer from './pages/LessonPlayer'
 import Progress from './pages/Progress'
 import LearnerCertificates from './pages/LearnerCertificates'
+import CertificateVerification from './pages/CertificateVerification'
 import LearnerAssessments from './pages/LearnerAssessments'
 import LearnerCalendar from './pages/LearnerCalendar'
+import TrainerCalendar from "./pages/TrainerCalendar";
 import LearnerCodingExam from './pages/LearnerCodingExam'
 import LearnerExamHistory from './pages/LearnerExamHistory'
+import LearnerPayments from "./pages/LearnerPayments";
 
 
 // =========================================================
@@ -75,6 +83,17 @@ import LearnerExamHistory from './pages/LearnerExamHistory'
 
 import AccountSettings from './pages/AccountSettings'
 import ComingSoon from './pages/ComingSoon'
+import AdminAuditLogs from './pages/AdminAuditLogs'
+import AdminPayments from './pages/AdminPayments'
+import LearnerAttendance from './pages/LearnerAttendance'
+import AdminReports from "./pages/AdminReports";
+import TrainerStudents from "./pages/TrainerStudents";
+import TrainerAnalytics from "./pages/TrainerAnalytics";
+import TrainerQuestionBank from "./pages/TrainerQuestionBank";
+import TrainerMixedExams from "./pages/TrainerMixedExams";
+import TrainerMixedExamManage from "./pages/TrainerMixedExamManage";
+import MixedExamCandidate from "./pages/MixedExamCandidate";
+import Community from "./pages/Community";
 
 
 // =========================================================
@@ -163,6 +182,13 @@ export default function App() {
         
         <Routes>
 
+        {/* =================================================
+            PUBLIC CERTIFICATE VERIFICATION
+        ================================================= */}
+        <Route
+          path="/verify/:certificateNumber"
+          element={<CertificateVerification />}
+        />
 
         {/* =================================================
             ROOT
@@ -291,12 +317,62 @@ export default function App() {
             </ProtectedRoute>
           }
         />
+        <Route
+          path="/admin/batches"
+          element={
+            <ProtectedRoute allowedRole="admin">
+              <AdminBatches />
+            </ProtectedRoute>
+          }
+        />
 
         <Route
           path="/admin/settings"
           element={
             <ProtectedRoute allowedRole="admin">
               <AccountSettings role="admin" />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/admin/attendance"
+          element={
+            <ProtectedRoute allowedRole="admin">
+              <AdminAttendance />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/admin/csv-import"
+          element={
+            <ProtectedRoute allowedRole="admin">
+              <AdminCsvImport />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin/audit-logs"
+          element={
+            <ProtectedRoute allowedRole="admin">
+              <AdminAuditLogs />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin/payments"
+          element={
+            <ProtectedRoute allowedRole="admin">
+              <AdminPayments />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin/reports"
+          element={
+            <ProtectedRoute allowedRole="admin">
+              <AdminReports />
             </ProtectedRoute>
           }
         />
@@ -436,10 +512,68 @@ export default function App() {
           }
         />
 
-
         {/* =================================================
             OTHER TRAINER PAGES
         ================================================= */}
+        
+        <Route
+          path="/trainer/attendance"
+          element={
+            <ProtectedRoute allowedRole="trainer">
+              <TrainerAttendance />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/trainer/students"
+          element={
+            <ProtectedRoute allowedRole="trainer">
+              <TrainerStudents />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/trainer/analytics"
+          element={
+            <ProtectedRoute allowedRole="trainer">
+              <TrainerAnalytics />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/trainer/calendar"
+          element={
+            <ProtectedRoute allowedRole="trainer">
+              <TrainerCalendar />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/trainer/question-bank"
+          element={
+            <TrainerQuestionBank />
+          }
+        />
+        <Route
+          path="/trainer/mixed-exams"
+          element={
+            <TrainerMixedExams />
+          }
+        />
+
+        <Route
+          path="/trainer/mixed-exams/:examId"
+          element={
+            <TrainerMixedExamManage />
+          }
+        />
+        <Route
+          path="/mixed-exam/invite/:inviteCode"
+          element={
+            <MixedExamCandidate />
+          }
+        />
 
         <Route
           path="/trainer/*"
@@ -508,6 +642,23 @@ export default function App() {
             </ProtectedRoute>
           }
         />
+        <Route
+          path="/learner/attendance"
+          element={
+            <ProtectedRoute allowedRole="learner">
+              <LearnerAttendance />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/learner/payments"
+          element={
+            <ProtectedRoute allowedRole="learner">
+              <LearnerPayments />
+            </ProtectedRoute>
+          }
+        />
 
         <Route
           path="/learner/course/:courseId/lesson/:lessonId"
@@ -541,6 +692,15 @@ export default function App() {
           element={
             <ProtectedRoute allowedRole="learner">
               <LearnerCalendar />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/learner/community"
+          element={
+            <ProtectedRoute allowedRole="learner">
+              <Community />
             </ProtectedRoute>
           }
         />

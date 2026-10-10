@@ -2,17 +2,40 @@ from flask import (
     Blueprint,
     request,
     jsonify,
+    send_file,
     send_from_directory,
     current_app,
 )
-
+import csv
 import os
 import shutil
 import secrets
 import random
 import json
 import uuid
+import hmac
+import hashlib
+import razorpay
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
+
+import qrcode
+
+from reportlab.lib import colors
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.units import mm
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+    Table,
+    TableStyle,
+    Image,
+)
 
 from werkzeug.utils import secure_filename
 
@@ -47,9 +70,21 @@ from .models import (
     Payment,
     Invoice,
     LessonProgress,
+    LessonNote,
     LessonResource,
     Wishlist,
     Discussion,
+    MixedExam,
+    MixedExamSection,
+    QuestionBank,
+    QuestionBankItem,
+    MixedExamQuestion,
+    MixedExamInvite,
+    MixedExamAttempt,
+    MixedExamAnswer,
+    CalendarEvent,
+    Notification,
+    AuditLog,
 )
 from .code_runner.runner import run_code
 
@@ -133,6 +168,24 @@ ALLOWED_DOCUMENT_EXTENSIONS = {
 # =========================================================
 # BASIC HELPERS
 # =========================================================
+
+def create_audit_log(
+    user,
+    action,
+    entity_type,
+    entity_id=None,
+    description="",
+):
+    audit_log = AuditLog(
+        user_id=user.id if user else None,
+        action=action,
+        entity_type=entity_type,
+        entity_id=str(entity_id) if entity_id is not None else None,
+        description=description,
+        ip_address=request.remote_addr,
+    )
+
+    db.session.add(audit_log)
 
 def allowed_extension(filename, allowed):
     return bool(
@@ -389,6 +442,10 @@ def course_json(
         "description": course.description,
         "thumbnail": course.thumbnail,
         "published": course.published,
+
+        "course_fee": float(
+            course.course_fee or 0
+        ),
         "progress": progress,
         "totalLessons": lesson_count,
         "lessons": (
@@ -757,6 +814,225 @@ def admin_dashboard(user):
         },
     })
 
+# =========================================================
+# ADMIN - REPORTS & ANALYTICS
+# =========================================================
+
+@api.get("/admin/reports/overview")
+@role_required("admin")
+def admin_reports_overview(user):
+
+    # -----------------------------------------------------
+    # USER STATISTICS
+    # -----------------------------------------------------
+
+    total_users = User.query.count()
+
+    total_learners = Learner.query.count()
+
+    total_trainers = Trainer.query.count()
+
+    active_users = User.query.filter_by(
+        status="active"
+    ).count()
+
+    inactive_users = User.query.filter_by(
+        status="inactive"
+    ).count()
+
+    # -----------------------------------------------------
+    # COURSE STATISTICS
+    # -----------------------------------------------------
+
+    total_courses = Course.query.count()
+
+    published_courses = Course.query.filter_by(
+        published=True
+    ).count()
+
+    unpublished_courses = Course.query.filter_by(
+        published=False
+    ).count()
+
+    # -----------------------------------------------------
+    # ENROLLMENT STATISTICS
+    # -----------------------------------------------------
+
+    total_enrollments = Enrollment.query.count()
+
+    active_enrollments = Enrollment.query.filter_by(
+        status="active"
+    ).count()
+
+    payment_pending_enrollments = (
+        Enrollment.query
+        .filter_by(status="payment_pending")
+        .count()
+    )
+
+    # -----------------------------------------------------
+    # PAYMENT STATISTICS
+    # -----------------------------------------------------
+
+    total_payments = Payment.query.count()
+
+    paid_payments = Payment.query.filter_by(
+        status="paid"
+    ).count()
+
+    pending_payments = Payment.query.filter_by(
+        status="pending"
+    ).count()
+
+    failed_payments = Payment.query.filter_by(
+        status="failed"
+    ).count()
+
+    # -----------------------------------------------------
+    # REVENUE
+    # -----------------------------------------------------
+
+    total_revenue = (
+        db.session.query(
+            db.func.coalesce(
+                db.func.sum(Payment.amount),
+                0
+            )
+        )
+        .filter(
+            Payment.status == "paid"
+        )
+        .scalar()
+    )
+
+    pending_revenue = (
+        db.session.query(
+            db.func.coalesce(
+                db.func.sum(Payment.amount),
+                0
+            )
+        )
+        .filter(
+            Payment.status == "pending"
+        )
+        .scalar()
+    )
+
+    # -----------------------------------------------------
+    # INVOICE STATISTICS
+    # -----------------------------------------------------
+
+    total_invoices = Invoice.query.count()
+
+    paid_invoices = Invoice.query.filter_by(
+        status="paid"
+    ).count()
+
+    unpaid_invoices = Invoice.query.filter_by(
+        status="unpaid"
+    ).count()
+
+    # -----------------------------------------------------
+    # CERTIFICATE STATISTICS
+    # -----------------------------------------------------
+
+    total_certificates = Certificate.query.count()
+
+    valid_certificates = Certificate.query.filter_by(
+        status="valid"
+    ).count()
+
+    # -----------------------------------------------------
+    # ENROLLMENT PROGRESS
+    # -----------------------------------------------------
+
+    average_progress = (
+        db.session.query(
+            db.func.coalesce(
+                db.func.avg(
+                    Enrollment.progress
+                ),
+                0
+            )
+        )
+        .scalar()
+    )
+
+    completed_enrollments = (
+        Enrollment.query
+        .filter(
+            Enrollment.progress >= 100
+        )
+        .count()
+    )
+
+    # -----------------------------------------------------
+    # RESPONSE
+    # -----------------------------------------------------
+
+    return jsonify({
+
+        "users": {
+            "total": total_users,
+            "learners": total_learners,
+            "trainers": total_trainers,
+            "active": active_users,
+            "inactive": inactive_users,
+        },
+
+        "courses": {
+            "total": total_courses,
+            "published": published_courses,
+            "unpublished": unpublished_courses,
+        },
+
+        "enrollments": {
+            "total": total_enrollments,
+            "active": active_enrollments,
+            "payment_pending":
+                payment_pending_enrollments,
+            "completed":
+                completed_enrollments,
+        },
+
+        "payments": {
+            "total": total_payments,
+            "paid": paid_payments,
+            "pending": pending_payments,
+            "failed": failed_payments,
+        },
+
+        "revenue": {
+            "total_paid":
+                float(total_revenue or 0),
+            "pending":
+                float(pending_revenue or 0),
+        },
+
+        "invoices": {
+            "total": total_invoices,
+            "paid": paid_invoices,
+            "unpaid": unpaid_invoices,
+        },
+
+        "certificates": {
+            "total": total_certificates,
+            "valid": valid_certificates,
+        },
+
+        "progress": {
+            "average":
+                round(
+                    float(
+                        average_progress or 0
+                    ),
+                    2
+                ),
+            "completed_enrollments":
+                completed_enrollments,
+        },
+
+    }), 200
 
 # =========================================================
 # ADMIN - USERS
@@ -1205,6 +1481,280 @@ def admin_create_learner(user):
             learner_json(learner),
     }), 201
 
+# =========================================================
+# ADMIN - CSV TEMPLATE FOR LEARNER IMPORT
+# =========================================================
+
+@api.get("/admin/learners/import-csv/template")
+@role_required("admin")
+def admin_learners_csv_template(user):
+    output = BytesIO()
+
+    content = (
+        "name,email,password,mobile,education\n"
+        "John Doe,john@example.com,Welcome123,+919999999999,B.Tech\n"
+    )
+
+    output.write(content.encode("utf-8"))
+    output.seek(0)
+
+    return send_file(
+        output,
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name="learner_import_template.csv",
+    )
+
+# =========================================================
+# ADMIN - BULK IMPORT LEARNERS FROM CSV
+# =========================================================
+
+@api.post("/admin/learners/import-csv")
+@role_required("admin")
+def admin_import_learners_csv(user):
+    if "file" not in request.files:
+        return jsonify({
+            "error": "CSV file is required"
+        }), 400
+
+    file = request.files["file"]
+
+    if not file.filename:
+        return jsonify({
+            "error": "CSV file is required"
+        }), 400
+
+    if not file.filename.lower().endswith(".csv"):
+        return jsonify({
+            "error": "Only CSV files are allowed"
+        }), 400
+
+    try:
+        content = file.read().decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return jsonify({
+            "error": "CSV file must use UTF-8 encoding"
+        }), 400
+
+    reader = csv.DictReader(content.splitlines())
+
+    required_columns = {
+        "name",
+        "email",
+        "password",
+    }
+
+    if not reader.fieldnames:
+        return jsonify({
+            "error": "CSV file must contain a header row"
+        }), 400
+
+    columns = {
+        column.strip().lower()
+        for column in reader.fieldnames
+        if column
+    }
+
+    missing_columns = required_columns - columns
+
+    if missing_columns:
+        return jsonify({
+            "error": (
+                "Missing required columns: "
+                + ", ".join(sorted(missing_columns))
+            )
+        }), 400
+
+    created = []
+    skipped = []
+    errors = []
+
+    for row_number, row in enumerate(reader, start=2):
+        name = str(
+            row.get("name", "")
+        ).strip()
+
+        email = str(
+            row.get("email", "")
+        ).strip().lower()
+
+        password = str(
+            row.get("password", "")
+        )
+
+        mobile = str(
+            row.get("mobile", "")
+        ).strip()
+
+        education = str(
+            row.get("education", "")
+        ).strip()
+
+        if not name:
+            errors.append({
+                "row": row_number,
+                "error": "Name is required"
+            })
+            continue
+
+        if not email:
+            errors.append({
+                "row": row_number,
+                "error": "Email is required"
+            })
+            continue
+
+        if not password or len(password) < 8:
+            errors.append({
+                "row": row_number,
+                "error": (
+                    "Password must be at least 8 characters"
+                )
+            })
+            continue
+
+        existing_user = User.query.filter_by(
+            email=email
+        ).first()
+
+        if existing_user:
+            skipped.append({
+                "row": row_number,
+                "email": email,
+                "reason": "Email already exists"
+            })
+            continue
+
+        try:
+            with db.session.begin_nested():
+                learner_user = User(
+                    name=name,
+                    email=email,
+                    mobile=mobile,
+                    role="learner",
+                    status="active",
+                    password_hash=create_password_hash(
+                        password
+                    ),
+                )
+
+                db.session.add(learner_user)
+                db.session.flush()
+
+                learner = Learner(
+                    user_id=learner_user.id,
+                    education=education,
+                    status="active",
+                )
+
+                db.session.add(learner)
+                db.session.flush()
+
+                created.append({
+                    "row": row_number,
+                    "name": name,
+                    "email": email,
+                    "learner_id": learner.id,
+                })
+
+        except Exception as exc:
+            errors.append({
+                "row": row_number,
+                "email": email,
+                "error": str(exc),
+            })
+    current_app.logger.warning(
+        "AUDIT DEBUG: user=%s created=%s skipped=%s errors=%s",
+        user.id,
+        len(created),
+        len(skipped),
+        len(errors),
+    )
+    create_audit_log(
+        user=user,
+        action="CSV_IMPORT",
+        entity_type="Learner",
+        description=(
+            f"Imported learners from CSV: "
+            f"{len(created)} created, "
+            f"{len(skipped)} skipped, "
+            f"{len(errors)} errors"
+        ),
+    )
+
+    db.session.commit()
+
+    return jsonify({
+        "message": "CSV import completed",
+        "summary": {
+            "created": len(created),
+            "skipped": len(skipped),
+            "errors": len(errors),
+            "total_rows": (
+                len(created)
+                + len(skipped)
+                + len(errors)
+            ),
+        },
+        "created": created,
+        "skipped": skipped,
+        "errors": errors,
+    }), 200
+
+# =========================================================
+# ADMIN - AUDIT LOGS
+# =========================================================
+
+@api.get("/admin/audit-logs")
+@role_required("admin")
+def admin_audit_logs(user):
+    page = request.args.get("page", 1, type=int)
+    per_page = request.args.get("per_page", 20, type=int)
+
+    page = max(page, 1)
+    per_page = min(max(per_page, 1), 100)
+
+    pagination = (
+        AuditLog.query
+        .order_by(AuditLog.created_at.desc())
+        .paginate(
+            page=page,
+            per_page=per_page,
+            error_out=False,
+        )
+    )
+
+    logs = []
+
+    for log in pagination.items:
+        logs.append({
+            "id": log.id,
+            "user_id": log.user_id,
+            "user_name": log.user.name if log.user else None,
+            "action": log.action,
+            "entity_type": log.entity_type,
+            "entity_id": log.entity_id,
+            "description": log.description,
+            "ip_address": log.ip_address,
+            "created_at": (
+                log.created_at.isoformat()
+                if log.created_at
+                else None
+            ),
+        })
+
+    return jsonify({
+        "audit_logs": logs,
+        "pagination": {
+            "page": pagination.page,
+            "per_page": pagination.per_page,
+            "total": pagination.total,
+            "pages": pagination.pages,
+            "has_next": pagination.has_next,
+            "has_prev": pagination.has_prev,
+        },
+    }), 200
+
 
 # =========================================================
 # ADMIN - LEARNERS
@@ -1410,6 +1960,39 @@ def admin_update_course_status(
         "course":
             course_json(course),
     })
+
+@api.put("/admin/courses/<string:course_id>/price")
+@role_required("admin")
+def admin_update_course_price(user, course_id):
+    course = Course.query.get_or_404(course_id)
+
+    data = request.get_json(silent=True) or {}
+
+    if "course_fee" not in data:
+        return jsonify({
+            "error": "course_fee is required"
+        }), 400
+
+    try:
+        course_fee = float(data["course_fee"])
+    except (TypeError, ValueError):
+        return jsonify({
+            "error": "course_fee must be a valid number"
+        }), 400
+
+    if course_fee < 0:
+        return jsonify({
+            "error": "course_fee cannot be negative"
+        }), 400
+
+    course.course_fee = course_fee
+
+    db.session.commit()
+
+    return jsonify({
+        "message": "Course price updated successfully",
+        "course": course_json(course)
+    }), 200
 
 # =========================================================
 # ADMIN - DELETE ENTIRE COURSE
@@ -1999,132 +2582,259 @@ def course_details(
     ).first()
 
     progress = 0
+    enrollment = None
+    access_granted = True
+    payment_required = False
+    paid_amount = 0
+    pending_amount = 0
 
-    if learner:
+    # -----------------------------------------------------
+    # LEARNER ACCESS CHECK
+    # -----------------------------------------------------
+
+    if user.role == "learner":
+
+        if not learner:
+            return jsonify({
+                "error": "Learner profile not found"
+            }), 404
+
         enrollment = (
             Enrollment.query
             .filter_by(
                 learner_id=learner.id,
                 course_id=course.id,
-                status="active",
             )
             .first()
         )
 
+        course_fee = float(
+            course.course_fee or 0
+        )
+
+        # -------------------------------------------------
+        # Calculate paid amount
+        # -------------------------------------------------
+
         if enrollment:
-            progress = (
-                enrollment.progress
+
+            paid_amount = (
+                db.session.query(
+                    db.func.coalesce(
+                        db.func.sum(
+                            Payment.amount
+                        ),
+                        0
+                    )
+                )
+                .filter(
+                    Payment.enrollment_id
+                    == enrollment.id,
+                    Payment.status == "paid"
+                )
+                .scalar()
                 or 0
             )
 
-    modules = (
-        Module.query
-        .filter_by(
-            course_id=course.id
-        )
-        .order_by(
-            Module.id.asc()
-        )
-        .all()
-    )
+            paid_amount = float(
+                paid_amount
+            )
+
+        # -------------------------------------------------
+        # FREE COURSE
+        # -------------------------------------------------
+
+        if course_fee <= 0:
+
+            payment_required = False
+
+            if enrollment:
+                access_granted = (
+                    enrollment.status == "active"
+                )
+                progress = (
+                    enrollment.progress or 0
+                )
+            else:
+                access_granted = False
+
+        # -------------------------------------------------
+        # PAID COURSE
+        # -------------------------------------------------
+
+        else:
+
+            pending_amount = max(
+                course_fee - paid_amount,
+                0
+            )
+
+            if enrollment:
+                progress = (
+                    enrollment.progress or 0
+                )
+
+            # Full payment + active enrollment
+            if (
+                enrollment
+                and enrollment.status == "active"
+                and paid_amount >= course_fee
+            ):
+                access_granted = True
+                payment_required = False
+
+            else:
+                access_granted = False
+                payment_required = True
+
+    # -----------------------------------------------------
+    # Load course content only when access is granted
+    # -----------------------------------------------------
 
     module_result = []
 
-    for module in modules:
-        lessons = (
-            Lesson.query
+    if access_granted:
+
+        modules = (
+            Module.query
             .filter_by(
-                module_id=module.id
+                course_id=course.id
             )
             .order_by(
-                Lesson.id.asc()
+                Module.id.asc()
             )
             .all()
         )
 
-        lesson_result = []
+        for module in modules:
 
-        for lesson in lessons:
-            completed = False
-
-            if learner:
-                progress_row = (
-                    LessonProgress.query
-                    .filter_by(
-                        learner_id=learner.id,
-                        lesson_id=lesson.id,
-                    )
-                    .first()
-                )
-
-                if progress_row:
-                    completed = bool(
-                        progress_row.completed
-                    )
-
-            resources = (
-                LessonResource.query
+            lessons = (
+                Lesson.query
                 .filter_by(
-                    lesson_id=lesson.id
+                    module_id=module.id
                 )
                 .order_by(
-                    LessonResource.id.asc()
+                    Lesson.id.asc()
                 )
                 .all()
             )
 
-            resource_result = []
+            lesson_result = []
 
-            for resource in resources:
-                resource_result.append({
-                    "id": resource.id,
-                    "type": resource.resource_type,
-                    "fileName": resource.file_name,
-                    "title": resource.title or resource.file_name,
-                    "url": "/api/files/" + os.path.relpath(
-                         resource.file_path,
-                        current_app.config["UPLOAD_FOLDER"],
-                    ).replace(
-                        os.sep,
-                         "/",
-                    ),           
+            for lesson in lessons:
+
+                completed = False
+
+                if learner:
+
+                    progress_row = (
+                        LessonProgress.query
+                        .filter_by(
+                            learner_id=learner.id,
+                            lesson_id=lesson.id,
+                        )
+                        .first()
+                    )
+
+                    if progress_row:
+                        completed = bool(
+                            progress_row.completed
+                        )
+
+                resources = (
+                    LessonResource.query
+                    .filter_by(
+                        lesson_id=lesson.id
+                    )
+                    .order_by(
+                        LessonResource.id.asc()
+                    )
+                    .all()
+                )
+
+                resource_result = []
+
+                for resource in resources:
+
+                    resource_result.append({
+                        "id": resource.id,
+                        "type":
+                            resource.resource_type,
+                        "fileName":
+                            resource.file_name,
+                        "title":
+                            resource.title
+                            or resource.file_name,
+                        "url":
+                            "/api/files/"
+                            + os.path.relpath(
+                                resource.file_path,
+                                current_app.config[
+                                    "UPLOAD_FOLDER"
+                                ],
+                            ).replace(
+                                os.sep,
+                                "/",
+                            ),
+                    })
+
+                lesson_result.append({
+                    "id": lesson.id,
+                    "title": lesson.title,
+                    "description": getattr(
+                        lesson,
+                        "description",
+                        "",
+                    ),
+                    "duration": lesson.duration,
+                    "video_url": lesson.video_url,
+                    "pdf_url": lesson.pdf_url,
+                    "completed": completed,
+                    "resources": resource_result,
                 })
 
-            lesson_result.append({
-                "id": lesson.id,
-                "title": lesson.title,
+            module_result.append({
+                "id": module.id,
+                "course_id":
+                    module.course_id,
+                "title": module.title,
                 "description": getattr(
-                    lesson,
+                    module,
                     "description",
                     "",
                 ),
-                "duration": lesson.duration,
-                "video_url": lesson.video_url,
-                "pdf_url": lesson.pdf_url,
-                "completed": completed,
-                "resources": resource_result,
+                "lessons": lesson_result,
             })
 
-        module_result.append({
-            "id": module.id,
-            "course_id": module.course_id,
-            "title": module.title,
-            "description": getattr(
-                module,
-                "description",
-                "",
-            ),
-            "lessons": lesson_result,
-        })
+    # -----------------------------------------------------
+    # Response
+    # -----------------------------------------------------
 
     return jsonify({
-        "course":
-            course_json(
-                course,
-                progress,
-            ),
-        "modules":
-            module_result,
+        "course": course_json(
+            course,
+            progress,
+        ),
+
+        "modules": module_result,
+
+        "access_granted":
+            access_granted,
+
+        "payment_required":
+            payment_required,
+
+        "enrollment_status": (
+            enrollment.status
+            if enrollment
+            else None
+        ),
+
+        "paid_amount":
+            paid_amount,
+
+        "pending_amount":
+            pending_amount,
     })
 
 
@@ -2210,8 +2920,7 @@ def trainer_create_course(user):
 
     if not trainer:
         return jsonify({
-            "error":
-                "Trainer profile not found"
+            "error": "Trainer profile not found"
         }), 404
 
     data = (
@@ -2235,21 +2944,39 @@ def trainer_create_course(user):
 
     if not course_id:
         return jsonify({
-            "error":
-                "Course ID is required"
+            "error": "Course ID is required"
         }), 400
 
     if not title:
         return jsonify({
-            "error":
-                "Course title is required"
+            "error": "Course title is required"
         }), 400
 
     if Course.query.get(course_id):
         return jsonify({
-            "error":
-                "Course ID already exists"
+            "error": "Course ID already exists"
         }), 409
+
+    # -----------------------------------------------------
+    # Validate course fee
+    # -----------------------------------------------------
+
+    course_fee = data.get(
+        "course_fee",
+        0
+    )
+
+    try:
+        course_fee = float(course_fee)
+    except (TypeError, ValueError):
+        return jsonify({
+            "error": "course_fee must be a valid number"
+        }), 400
+
+    if course_fee < 0:
+        return jsonify({
+            "error": "course_fee cannot be negative"
+        }), 400
 
     course = Course(
         id=course_id,
@@ -2267,6 +2994,7 @@ def trainer_create_course(user):
             "thumbnail",
             "",
         ),
+        course_fee=course_fee,
         published=False,
     )
 
@@ -2279,6 +3007,532 @@ def trainer_create_course(user):
         "course":
             course_json(course),
     }), 201
+
+# =========================================================
+# CALENDAR - DATETIME HELPERS
+# =========================================================
+
+def calendar_datetime_iso(value):
+    if not value:
+        return None
+
+    if value.tzinfo is None:
+        value = value.replace(
+            tzinfo=timezone.utc
+        )
+
+    return value.astimezone(
+        timezone.utc
+    ).isoformat()
+
+# =========================================================
+# CALENDAR - LEARNER
+# =========================================================
+
+@api.get("/learner/calendar")
+@role_required("learner")
+def learner_calendar(user):
+    learner = Learner.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not learner:
+        return jsonify({
+            "error": "Learner profile not found"
+        }), 404
+
+    enrollments = Enrollment.query.filter_by(
+        learner_id=learner.id
+    ).all()
+
+    active_course_ids = [
+        enrollment.course_id
+        for enrollment in enrollments
+        if enrollment.status == "active"
+    ]
+
+    if not active_course_ids:
+        return jsonify({
+            "events": []
+        }), 200
+
+    now = datetime.now(timezone.utc)
+
+    events = (
+        CalendarEvent.query
+        .filter(
+            CalendarEvent.course_id.in_(active_course_ids),
+            CalendarEvent.start_at >= now
+        )
+        .order_by(
+            CalendarEvent.start_at.asc()
+        )
+        .all()
+    )
+
+    result = []
+
+    for event in events:
+        course = Course.query.get(
+            event.course_id
+        )
+
+        result.append({
+            "id": event.id,
+            "course_id": event.course_id,
+            "course_title": (
+                course.title
+                if course
+                else event.course_id
+            ),
+            "title": event.title,
+            "description": event.description or "",
+            "event_type": event.event_type,
+            "start_at": calendar_datetime_iso(
+                event.start_at
+            ),
+            "end_at": calendar_datetime_iso(
+                event.end_at
+            ),
+            "meeting_url": event.meeting_url or ""
+        })
+
+    return jsonify({
+        "events": result
+    }), 200
+
+# =========================================================
+# CALENDAR - TRAINER LIST EVENTS
+# =========================================================
+
+@api.get("/trainer/calendar/events")
+@role_required("trainer")
+def trainer_calendar_events(user):
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    events = (
+        CalendarEvent.query
+        .filter_by(
+            trainer_id=trainer.id
+        )
+        .order_by(
+            CalendarEvent.start_at.asc()
+        )
+        .all()
+    )
+
+    result = []
+
+    for event in events:
+        course = Course.query.get(
+            event.course_id
+        )
+
+        result.append({
+            "id": event.id,
+            "course_id": event.course_id,
+            "course_title": (
+                course.title
+                if course
+                else event.course_id
+            ),
+            "title": event.title,
+            "description": event.description or "",
+            "event_type": event.event_type,
+            "start_at": calendar_datetime_iso(
+                event.start_at
+            ),
+            "end_at": calendar_datetime_iso(
+                event.end_at
+            ),
+            "meeting_url": event.meeting_url or ""
+        })
+
+    return jsonify({
+        "events": result
+    }), 200
+
+# =========================================================
+# CALENDAR - TRAINER CREATE EVENT
+# =========================================================
+
+@api.post("/trainer/calendar/events")
+@role_required("trainer")
+def trainer_create_calendar_event(user):
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    data = (
+        request.get_json(
+            silent=True
+        )
+        or {}
+    )
+
+    course_id = str(
+        data.get("course_id", "")
+    ).strip()
+
+    title = str(
+        data.get("title", "")
+    ).strip()
+
+    description = str(
+        data.get("description", "")
+    ).strip()
+
+    event_type = str(
+        data.get(
+            "event_type",
+            "live_class"
+        )
+    ).strip()
+
+    start_at_value = data.get(
+        "start_at"
+    )
+
+    end_at_value = data.get(
+        "end_at"
+    )
+
+    meeting_url = str(
+        data.get("meeting_url", "")
+    ).strip()
+
+    if not course_id:
+        return jsonify({
+            "error": "Course ID is required"
+        }), 400
+
+    if not title:
+        return jsonify({
+            "error": "Event title is required"
+        }), 400
+
+    if not start_at_value:
+        return jsonify({
+            "error": "Start date and time are required"
+        }), 400
+
+    course = Course.query.filter_by(
+        id=course_id,
+        trainer_id=trainer.id
+    ).first()
+
+    if not course:
+        return jsonify({
+            "error": "Course not found or does not belong to this trainer"
+        }), 404
+
+    try:
+        start_at = datetime.fromisoformat(
+            str(start_at_value).replace(
+                "Z",
+                "+00:00"
+            )
+        )
+
+        if start_at.tzinfo is None:
+            start_at = start_at.replace(
+                tzinfo=timezone.utc
+            )
+        else:
+            start_at = start_at.astimezone(
+                timezone.utc
+            )
+
+    except ValueError:
+        return jsonify({
+            "error": "Invalid start_at format"
+        }), 400
+
+    end_at = None
+
+    if end_at_value:
+        try:
+            end_at = datetime.fromisoformat(
+                str(end_at_value).replace(
+                    "Z",
+                    "+00:00"
+                )
+            )
+
+            if end_at.tzinfo is None:
+                end_at = end_at.replace(
+                    tzinfo=timezone.utc
+                )
+            else:
+                end_at = end_at.astimezone(
+                    timezone.utc
+                )
+
+        except ValueError:
+            return jsonify({
+                "error": "Invalid end_at format"
+            }), 400
+
+    if end_at and end_at <= start_at:
+        return jsonify({
+            "error": "End time must be after start time"
+        }), 400
+
+    allowed_event_types = {
+        "live_class",
+        "exam",
+        "assignment",
+        "other"
+    }
+
+    if event_type not in allowed_event_types:
+        return jsonify({
+            "error": "Invalid event type"
+        }), 400
+
+    event = CalendarEvent(
+        course_id=course.id,
+        trainer_id=trainer.id,
+        title=title,
+        description=description,
+        event_type=event_type,
+        start_at=start_at,
+        end_at=end_at,
+        meeting_url=meeting_url
+    )
+
+    db.session.add(event)
+    db.session.commit()
+
+    return jsonify({
+        "message": "Calendar event created successfully",
+        "event": {
+            "id": event.id,
+            "course_id": event.course_id,
+            "title": event.title,
+            "description": event.description or "",
+            "event_type": event.event_type,
+            "start_at": calendar_datetime_iso(
+                event.start_at
+            ),
+            "end_at": calendar_datetime_iso(
+                event.end_at
+            ),
+            "meeting_url": event.meeting_url or ""
+        }
+    }), 201
+
+
+# =========================================================
+# CALENDAR - TRAINER UPDATE EVENT
+# =========================================================
+
+@api.put("/trainer/calendar/events/<int:event_id>")
+@role_required("trainer")
+def trainer_update_calendar_event(
+    user,
+    event_id
+):
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    event = CalendarEvent.query.filter_by(
+        id=event_id,
+        trainer_id=trainer.id
+    ).first()
+
+    if not event:
+        return jsonify({
+            "error": "Calendar event not found"
+        }), 404
+
+    data = (
+        request.get_json(
+            silent=True
+        )
+        or {}
+    )
+
+    if "title" in data:
+        title = str(
+            data.get("title", "")
+        ).strip()
+
+        if not title:
+            return jsonify({
+                "error": "Event title cannot be empty"
+            }), 400
+
+        event.title = title
+
+    if "description" in data:
+        event.description = str(
+            data.get("description", "")
+        ).strip()
+
+    if "meeting_url" in data:
+        event.meeting_url = str(
+            data.get("meeting_url", "")
+        ).strip()
+
+    if "event_type" in data:
+        event_type = str(
+            data.get("event_type", "")
+        ).strip()
+
+        allowed_event_types = {
+            "live_class",
+            "exam",
+            "assignment",
+            "other"
+        }
+
+        if event_type not in allowed_event_types:
+            return jsonify({
+                "error": "Invalid event type"
+            }), 400
+
+        event.event_type = event_type
+
+    if "start_at" in data:
+        try:
+            start_at = datetime.fromisoformat(
+                str(data["start_at"]).replace(
+                    "Z",
+                    "+00:00"
+                )
+            )
+
+            if start_at.tzinfo is None:
+                start_at = start_at.replace(
+                    tzinfo=timezone.utc
+                )
+            else:
+                start_at = start_at.astimezone(
+                    timezone.utc
+                )
+
+            event.start_at = start_at
+
+        except ValueError:
+            return jsonify({
+                "error": "Invalid start_at format"
+            }), 400
+
+    if "end_at" in data:
+        if data["end_at"]:
+            try:
+                end_at = datetime.fromisoformat(
+                    str(data["end_at"]).replace(
+                        "Z",
+                        "+00:00"
+                    )
+                )
+
+                if end_at.tzinfo is None:
+                    end_at = end_at.replace(
+                        tzinfo=timezone.utc
+                    )
+                else:
+                    end_at = end_at.astimezone(
+                        timezone.utc
+                    )
+
+                event.end_at = end_at
+
+            except ValueError:
+                return jsonify({
+                    "error": "Invalid end_at format"
+                }), 400
+        else:
+            event.end_at = None
+
+    if (
+        event.end_at
+        and event.end_at <= event.start_at
+    ):
+        return jsonify({
+            "error": "End time must be after start time"
+        }), 400
+
+    event.updated_at = datetime.now(
+        timezone.utc
+    )
+
+    db.session.commit()
+
+    return jsonify({
+        "message": "Calendar event updated successfully",
+        "event": {
+            "id": event.id,
+            "course_id": event.course_id,
+            "title": event.title,
+            "description": event.description or "",
+            "event_type": event.event_type,
+            "start_at": calendar_datetime_iso(
+                event.start_at
+            ),
+            "end_at": calendar_datetime_iso(
+                event.end_at
+            ),
+            "meeting_url": event.meeting_url or ""
+        }
+    }), 200
+
+
+# =========================================================
+# CALENDAR - TRAINER DELETE EVENT
+# =========================================================
+
+@api.delete("/trainer/calendar/events/<int:event_id>")
+@role_required("trainer")
+def trainer_delete_calendar_event(
+    user,
+    event_id
+):
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    event = CalendarEvent.query.filter_by(
+        id=event_id,
+        trainer_id=trainer.id
+    ).first()
+
+    if not event:
+        return jsonify({
+            "error": "Calendar event not found"
+        }), 404
+
+    db.session.delete(event)
+    db.session.commit()
+
+    return jsonify({
+        "message": "Calendar event deleted successfully"
+    }), 200
 
 
 # =========================================================
@@ -2336,6 +3590,29 @@ def trainer_update_course(
         course.published = bool(
             data["published"]
         )
+
+    # -----------------------------------------------------
+    # Update course fee
+    # -----------------------------------------------------
+
+    if "course_fee" in data:
+        try:
+            course_fee = float(
+                data["course_fee"]
+            )
+        except (TypeError, ValueError):
+            return jsonify({
+                "error":
+                    "course_fee must be a valid number"
+            }), 400
+
+        if course_fee < 0:
+            return jsonify({
+                "error":
+                    "course_fee cannot be negative"
+            }), 400
+
+        course.course_fee = course_fee
 
     db.session.commit()
 
@@ -2801,9 +4078,7 @@ def trainer_create_lesson(
 # LEARNER - ENROLL
 # =========================================================
 
-@api.post(
-    "/courses/<course_id>/enroll"
-)
+@api.post("/courses/<course_id>/enroll")
 @role_required("learner")
 def enroll_course(
     user,
@@ -2829,6 +4104,20 @@ def enroll_course(
                 "Course not found"
         }), 404
 
+    # -----------------------------------------------------
+    # Only published courses can be enrolled in
+    # -----------------------------------------------------
+
+    if not course.published:
+        return jsonify({
+            "error":
+                "This course is not available for enrollment"
+        }), 400
+
+    # -----------------------------------------------------
+    # Check existing enrollment
+    # -----------------------------------------------------
+
     enrollment = (
         Enrollment.query
         .filter_by(
@@ -2839,28 +4128,149 @@ def enroll_course(
     )
 
     if enrollment:
-        if enrollment.status != "active":
-            enrollment.status = "active"
+
+        # Keep the enrollment fee synchronized
+        # with the course fee only when no payment
+        # has been recorded yet.
+        paid_amount = (
+            db.session.query(
+                db.func.coalesce(
+                    db.func.sum(Payment.amount),
+                    0
+                )
+            )
+            .filter(
+                Payment.enrollment_id == enrollment.id,
+                Payment.status == "paid"
+            )
+            .scalar()
+            or 0
+        )
+
+        if float(paid_amount) <= 0:
+            enrollment.course_fee = (
+                course.course_fee or 0
+            )
+
+        # Already fully active
+        if enrollment.status == "active":
             db.session.commit()
+
+            return jsonify({
+                "message":
+                    "Already enrolled in this course",
+                "enrollment": {
+                    "id": enrollment.id,
+                    "course_id":
+                        enrollment.course_id,
+                    "course_fee":
+                        float(
+                            enrollment.course_fee or 0
+                        ),
+                    "progress":
+                        enrollment.progress or 0,
+                    "status":
+                        enrollment.status,
+                    "paid_amount":
+                        float(paid_amount),
+                    "pending_amount":
+                        max(
+                            float(
+                                enrollment.course_fee or 0
+                            ) - float(paid_amount),
+                            0
+                        ),
+                },
+            }), 200
+
+        # Existing payment-pending enrollment
+        db.session.commit()
 
         return jsonify({
             "message":
-                "Already enrolled in this course",
+                "Enrollment already exists. Payment is required.",
             "enrollment": {
                 "id": enrollment.id,
-                "course_id": enrollment.course_id,
+                "course_id":
+                    enrollment.course_id,
+                "course_fee":
+                    float(
+                        enrollment.course_fee or 0
+                    ),
                 "progress":
                     enrollment.progress or 0,
                 "status":
                     enrollment.status,
+                "paid_amount":
+                    float(paid_amount),
+                "pending_amount":
+                    max(
+                        float(
+                            enrollment.course_fee or 0
+                        ) - float(paid_amount),
+                        0
+                    ),
             },
-        })
+        }), 200
+
+    # -----------------------------------------------------
+    # Copy the course fee into the enrollment
+    # -----------------------------------------------------
+
+    course_fee = float(
+        course.course_fee or 0
+    )
+
+    # -----------------------------------------------------
+    # Free course
+    # -----------------------------------------------------
+
+    if course_fee <= 0:
+
+        enrollment = Enrollment(
+            learner_id=learner.id,
+            course_id=course.id,
+            course_fee=0,
+            progress=0,
+            status="active",
+        )
+
+        db.session.add(enrollment)
+        db.session.commit()
+
+        return jsonify({
+            "message":
+                "Course enrolled successfully",
+            "enrollment": {
+                "id":
+                    enrollment.id,
+                "course_id":
+                    enrollment.course_id,
+                "course_fee":
+                    0,
+                "progress":
+                    0,
+                "status":
+                    enrollment.status,
+                "paid_amount":
+                    0,
+                "pending_amount":
+                    0,
+            },
+        }), 201
+
+    # -----------------------------------------------------
+    # Paid course
+    # -----------------------------------------------------
+    # Create the enrollment but DO NOT activate it.
+    # Payment must be recorded before access is granted.
 
     enrollment = Enrollment(
         learner_id=learner.id,
         course_id=course.id,
+        course_fee=course_fee,
         progress=0,
-        status="active",
+        status="payment_pending",
     )
 
     db.session.add(enrollment)
@@ -2868,12 +4278,22 @@ def enroll_course(
 
     return jsonify({
         "message":
-            "Course enrolled successfully",
+            "Enrollment created. Payment is required before course access.",
         "enrollment": {
-            "id": enrollment.id,
-            "course_id": enrollment.course_id,
-            "progress": 0,
-            "status": enrollment.status,
+            "id":
+                enrollment.id,
+            "course_id":
+                enrollment.course_id,
+            "course_fee":
+                course_fee,
+            "progress":
+                0,
+            "status":
+                enrollment.status,
+            "paid_amount":
+                0,
+            "pending_amount":
+                course_fee,
         },
     }), 201
 
@@ -3230,6 +4650,10 @@ def update_lesson_progress(user, lesson_id):
             "error": "Learner profile not found"
         }), 404
 
+    # --------------------------------------------------------
+    # Find lesson
+    # --------------------------------------------------------
+
     lesson = db.session.get(
         Lesson,
         lesson_id
@@ -3241,7 +4665,7 @@ def update_lesson_progress(user, lesson_id):
         }), 404
 
     # --------------------------------------------------------
-    # Find the course through the lesson's module
+    # Find module
     # --------------------------------------------------------
 
     module = db.session.get(
@@ -3253,6 +4677,10 @@ def update_lesson_progress(user, lesson_id):
         return jsonify({
             "error": "Module not found"
         }), 404
+
+    # --------------------------------------------------------
+    # Find course
+    # --------------------------------------------------------
 
     course = db.session.get(
         Course,
@@ -3277,80 +4705,6 @@ def update_lesson_progress(user, lesson_id):
     if not enrollment:
         return jsonify({
             "error": "You are not enrolled in this course"
-        }), 403
-
-        # --------------------------------------------------------
-    # QUIZ ATTEMPT / SERVER-SIDE TIMER
-    # --------------------------------------------------------
-
-    max_attempts = int(quiz.max_attempts or 1)
-
-    active_attempt = (
-        QuizAttempt.query
-        .filter_by(
-            quiz_id=quiz.id,
-            learner_id=learner.id,
-            attempted_at=None
-        )
-        .order_by(QuizAttempt.id.desc())
-        .first()
-    )
-
-    attempt_count = QuizAttempt.query.filter_by(
-        quiz_id=quiz.id,
-        learner_id=learner.id
-    ).count()
-
-    if not active_attempt:
-
-        if attempt_count >= max_attempts:
-            return jsonify({
-                "error": "Maximum quiz attempts reached",
-                "max_attempts": max_attempts,
-                "attempts_used": attempt_count
-            }), 403
-
-        active_attempt = QuizAttempt(
-            quiz_id=quiz.id,
-            learner_id=learner.id,
-            started_at=datetime.now(timezone.utc),
-            attempted_at=None,
-            score=0,
-            total=0
-        )
-
-        db.session.add(active_attempt)
-        db.session.commit()
-
-        attempt_count += 1
-
-    now = datetime.now(timezone.utc)
-
-    started_at = active_attempt.started_at
-
-    if started_at.tzinfo is None:
-        started_at = started_at.replace(
-            tzinfo=timezone.utc
-        )
-
-    expires_at = (
-        started_at +
-        timedelta(
-            minutes=int(
-                quiz.duration_minutes or 30
-            )
-        )
-    )
-
-    if now >= expires_at:
-        return jsonify({
-            "error": "Quiz time limit exceeded",
-            "duration_minutes": int(
-                quiz.duration_minutes or 30
-            ),
-            "started_at": started_at.isoformat(),
-            "expires_at": expires_at.isoformat(),
-            "attempt_id": active_attempt.id
         }), 403
 
     # --------------------------------------------------------
@@ -3389,7 +4743,7 @@ def update_lesson_progress(user, lesson_id):
     # Recalculate course progress
     # --------------------------------------------------------
 
-    course_lessons = (
+    total_lessons = (
         Lesson.query
         .join(
             Module,
@@ -3398,64 +4752,62 @@ def update_lesson_progress(user, lesson_id):
         .filter(
             Module.course_id == course.id
         )
-        .all()
+        .count()
     )
 
-    lesson_ids = [
-        item.id
-        for item in course_lessons
-    ]
-
-    if lesson_ids:
-        completed_count = (
-            LessonProgress.query
-            .filter(
-                LessonProgress.learner_id == learner.id,
-                LessonProgress.lesson_id.in_(lesson_ids),
-                LessonProgress.completed.is_(True)
-            )
-            .count()
+    completed_count = (
+        LessonProgress.query
+        .join(
+            Lesson,
+            LessonProgress.lesson_id == Lesson.id
         )
-
-        percentage = int(
-            (completed_count / len(lesson_ids)) * 100
+        .join(
+            Module,
+            Lesson.module_id == Module.id
         )
+        .filter(
+            LessonProgress.learner_id == learner.id,
+            LessonProgress.completed.is_(True),
+            Module.course_id == course.id
+        )
+        .count()
+    )
 
-    else:
-        percentage = 0
+    percentage = (
+        int(
+            (completed_count / total_lessons) * 100
+        )
+        if total_lessons
+        else 0
+    )
 
     enrollment.progress = percentage
 
+    certificate = (
+        Certificate.query
+        .filter_by(
+            learner_id=learner.id,
+            course_id=course.id
+        )
+        .first()
+    )
+
     # --------------------------------------------------------
-    # Course completion
+    # Course completion + certificate
     # --------------------------------------------------------
 
     if percentage >= 100:
         enrollment.status = "completed"
 
-        # ----------------------------------------------------
-        # Generate certificate automatically
-        # ----------------------------------------------------
-
-        existing_certificate = (
-            Certificate.query
-            .filter_by(
-                learner_id=learner.id,
-                course_id=course.id
-            )
-            .first()
-        )
-
-        if not existing_certificate:
-
+        if not certificate:
             now = datetime.now(
                 timezone.utc
             )
 
-            certificate_id = f"CERT-{secrets.token_urlsafe(24)}"
-
             certificate = Certificate(
-                certificate_id=certificate_id,
+                certificate_id=(
+                    f"CERT-{secrets.token_urlsafe(24)}"
+                ),
                 learner_id=learner.id,
                 course_id=course.id,
                 start_date=(
@@ -3466,34 +4818,255 @@ def update_lesson_progress(user, lesson_id):
                 status="valid"
             )
 
-            db.session.add(
-                certificate
-            )
+            db.session.add(certificate)
 
     db.session.commit()
 
-    return jsonify({
-    "valid": certificate.status == "valid",
-    "certificate": {
-        "certificate_id": certificate.certificate_id,
-        "course_title": (
-            course.title
-            if course
-            else None
-        ),
-        "start_date": (
-            certificate.start_date.isoformat()
-            if certificate.start_date
-            else None
-        ),
-        "end_date": (
-            certificate.end_date.isoformat()
-            if certificate.end_date
-            else None
-        ),
-        "status": certificate.status
+    # --------------------------------------------------------
+    # Response
+    # --------------------------------------------------------
+
+    response = {
+        "message": "Progress updated",
+        "completed": completed,
+        "courseProgress": percentage,
+        "enrollmentStatus": enrollment.status
     }
-})
+
+    if certificate:
+        response["certificate"] = {
+            "certificate_id": certificate.certificate_id,
+            "course_title": course.title,
+            "start_date": (
+                certificate.start_date.isoformat()
+                if certificate.start_date
+                else None
+            ),
+            "end_date": (
+                certificate.end_date.isoformat()
+                if certificate.end_date
+                else None
+            ),
+            "status": certificate.status
+        }
+
+    return jsonify(response)
+
+# ============================================================
+# LEARNER LESSON NOTES
+# ============================================================
+
+@api.get("/learner/lessons/<string:lesson_id>/notes")
+@role_required("learner")
+def get_lesson_notes(user, lesson_id):
+    # Find the learner profile.
+    learner = Learner.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not learner:
+        return jsonify({
+            "error": "Learner profile not found"
+        }), 404
+
+    # Find the lesson.
+    lesson = db.session.get(
+        Lesson,
+        lesson_id
+    )
+
+    if not lesson:
+        return jsonify({
+            "error": "Lesson not found"
+        }), 404
+
+    # Find the module and associated course.
+    module = db.session.get(
+        Module,
+        lesson.module_id
+    )
+
+    if not module:
+        return jsonify({
+            "error": "Module not found"
+        }), 404
+
+    course = db.session.get(
+        Course,
+        module.course_id
+    )
+
+    if not course:
+        return jsonify({
+            "error": "Course not found"
+        }), 404
+
+    # Require active enrollment.
+    enrollment = Enrollment.query.filter_by(
+        learner_id=learner.id,
+        course_id=course.id,
+        status="active"
+    ).first()
+
+    if not enrollment:
+        return jsonify({
+            "error": "You are not enrolled in this course"
+        }), 403
+
+    # Retrieve only this learner's note.
+    note = LessonNote.query.filter_by(
+        learner_id=learner.id,
+        lesson_id=lesson_id
+    ).first()
+
+    return jsonify({
+        "lesson_id": lesson_id,
+        "content": note.content if note else "",
+        "created_at": (
+            note.created_at.isoformat()
+            if note and note.created_at
+            else None
+        ),
+        "updated_at": (
+            note.updated_at.isoformat()
+            if note and note.updated_at
+            else None
+        )
+    }), 200
+
+
+@api.put("/learner/lessons/<string:lesson_id>/notes")
+@role_required("learner")
+def save_lesson_notes(user, lesson_id):
+    # Find the learner profile.
+    learner = Learner.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not learner:
+        return jsonify({
+            "error": "Learner profile not found"
+        }), 404
+
+    # Find the lesson.
+    lesson = db.session.get(
+        Lesson,
+        lesson_id
+    )
+
+    if not lesson:
+        return jsonify({
+            "error": "Lesson not found"
+        }), 404
+
+    # Find the module and associated course.
+    module = db.session.get(
+        Module,
+        lesson.module_id
+    )
+
+    if not module:
+        return jsonify({
+            "error": "Module not found"
+        }), 404
+
+    course = db.session.get(
+        Course,
+        module.course_id
+    )
+
+    if not course:
+        return jsonify({
+            "error": "Course not found"
+        }), 404
+
+    # Require active enrollment.
+    enrollment = Enrollment.query.filter_by(
+        learner_id=learner.id,
+        course_id=course.id,
+        status="active"
+    ).first()
+
+    if not enrollment:
+        return jsonify({
+            "error": "You are not enrolled in this course"
+        }), 403
+
+    # Validate the request body.
+    data = request.get_json(
+        silent=True
+    ) or {}
+
+    if "content" not in data:
+        return jsonify({
+            "error": "content is required"
+        }), 400
+
+    content = data["content"]
+
+    if not isinstance(content, str):
+        return jsonify({
+            "error": "content must be a string"
+        }), 400
+
+    if len(content) > 50000:
+        return jsonify({
+            "error": "Notes cannot exceed 50000 characters"
+        }), 400
+
+    # Retrieve this learner's existing note.
+    note = LessonNote.query.filter_by(
+        learner_id=learner.id,
+        lesson_id=lesson_id
+    ).first()
+
+    if note:
+        # Update the existing note.
+        note.content = content
+        note.updated_at = datetime.now(
+            timezone.utc
+        )
+
+    else:
+        # Create a new note.
+        note = LessonNote(
+            learner_id=learner.id,
+            lesson_id=lesson_id,
+            content=content
+        )
+
+        db.session.add(note)
+
+    try:
+        db.session.commit()
+
+    except Exception:
+        db.session.rollback()
+
+        current_app.logger.exception(
+            "Failed to save lesson notes"
+        )
+
+        return jsonify({
+            "error": "Unable to save lesson notes"
+        }), 500
+
+    return jsonify({
+        "message": "Lesson notes saved successfully",
+        "lesson_id": lesson_id,
+        "content": note.content,
+        "created_at": (
+            note.created_at.isoformat()
+            if note.created_at
+            else None
+        ),
+        "updated_at": (
+            note.updated_at.isoformat()
+            if note.updated_at
+            else None
+        )
+    }), 200
+
 
 @api.get("/learner/courses/<string:course_id>/progress")
 @role_required("learner")
@@ -3563,6 +5136,100 @@ def get_course_progress(user, course_id):
         "progress": percentage,
         "enrolled": enrollment is not None,
         "status": enrollment.status if enrollment else None
+    }), 200
+
+# ============================================================
+# LEARNER — ATTENDANCE
+# ============================================================
+
+@api.get("/learner/attendance")
+@role_required("learner")
+def learner_attendance(user):
+    learner = Learner.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not learner:
+        return jsonify({
+            "error": "Learner profile not found"
+        }), 404
+
+    records = (
+        Attendance.query
+        .filter_by(
+            learner_id=learner.id
+        )
+        .order_by(
+            Attendance.date.desc(),
+            Attendance.id.desc()
+        )
+        .all()
+    )
+
+    total = len(records)
+
+    present = sum(
+        1
+        for record in records
+        if record.status == "present"
+    )
+
+    late = sum(
+        1
+        for record in records
+        if record.status == "late"
+    )
+
+    absent = sum(
+        1
+        for record in records
+        if record.status == "absent"
+    )
+
+    attended = present + late
+
+    percentage = (
+        round(
+            (attended / total) * 100,
+            2
+        )
+        if total
+        else 0
+    )
+
+    history = []
+
+    for record in records:
+        batch = db.session.get(
+            Batch,
+            record.batch_id
+        )
+
+        history.append({
+            "id": record.id,
+            "date": (
+                record.date.isoformat()
+                if record.date
+                else None
+            ),
+            "batch_id": record.batch_id,
+            "batch_name": (
+                batch.name
+                if batch
+                else None
+            ),
+            "status": record.status
+        })
+
+    return jsonify({
+        "summary": {
+            "total": total,
+            "present": present,
+            "late": late,
+            "absent": absent,
+            "attendance_percentage": percentage
+        },
+        "history": history
     }), 200
 
 # ============================================================
@@ -4126,6 +5793,398 @@ def learner_certificate_detail(
         "status": certificate.status
     })
 
+@api.get("/learner/certificates/<int:certificate_id>/pdf")
+@role_required("learner")
+def learner_certificate_pdf(user, certificate_id):
+    learner = Learner.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not learner:
+        return jsonify({
+            "error": "Learner profile not found"
+        }), 404
+
+    certificate = Certificate.query.filter_by(
+        id=certificate_id,
+        learner_id=learner.id
+    ).first()
+
+    if not certificate:
+        return jsonify({
+            "error": "Certificate not found"
+        }), 404
+
+    course = db.session.get(
+        Course,
+        certificate.course_id
+    )
+
+    learner_user = db.session.get(
+        User,
+        learner.user_id
+    )
+
+    if not course:
+        return jsonify({
+            "error": "Course not found"
+        }), 404
+
+    if not learner_user:
+        return jsonify({
+            "error": "Learner user not found"
+        }), 404
+
+    # ---------------------------------------------------------
+    # PUBLIC VERIFICATION URL
+    # ---------------------------------------------------------
+
+    frontend_origin = current_app.config.get(
+        "FRONTEND_ORIGIN",
+        "http://localhost:5173"
+    ).rstrip("/")
+
+    verification_url = (
+        f"{frontend_origin}/verify/"
+        f"{certificate.certificate_id}"
+    )
+
+    # ---------------------------------------------------------
+    # QR CODE
+    # ---------------------------------------------------------
+
+    qr = qrcode.QRCode(
+        version=1,
+        box_size=8,
+        border=4,
+    )
+
+    qr.add_data(verification_url)
+    qr.make(fit=True)
+
+    qr_image = qr.make_image(
+        fill_color="black",
+        back_color="white"
+    )
+
+    qr_buffer = BytesIO()
+    qr_image.save(
+        qr_buffer,
+        format="PNG"
+    )
+    qr_buffer.seek(0)
+
+    # ---------------------------------------------------------
+    # PDF BUFFER
+    # ---------------------------------------------------------
+
+    pdf_buffer = BytesIO()
+
+    document = SimpleDocTemplate(
+        pdf_buffer,
+        pagesize=landscape(A4),
+        rightMargin=20 * mm,
+        leftMargin=20 * mm,
+        topMargin=18 * mm,
+        bottomMargin=18 * mm,
+    )
+
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle(
+        "CertificateTitle",
+        parent=styles["Title"],
+        fontName="Helvetica-Bold",
+        fontSize=30,
+        leading=36,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor("#111827"),
+        spaceAfter=8 * mm,
+    )
+
+    subtitle_style = ParagraphStyle(
+        "CertificateSubtitle",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=14,
+        leading=20,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor("#4B5563"),
+    )
+
+    learner_style = ParagraphStyle(
+        "LearnerName",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=24,
+        leading=30,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor("#111827"),
+        spaceBefore=5 * mm,
+        spaceAfter=5 * mm,
+    )
+
+    course_style = ParagraphStyle(
+        "CourseName",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=20,
+        leading=26,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor("#2563EB"),
+        spaceAfter=8 * mm,
+    )
+
+    detail_style = ParagraphStyle(
+        "CertificateDetails",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=10,
+        leading=14,
+        textColor=colors.HexColor("#374151"),
+    )
+
+    story = []
+
+    story.append(
+        Paragraph(
+            "CERTIFICATE OF COMPLETION",
+            title_style
+        )
+    )
+
+    story.append(
+        Paragraph(
+            "This certificate is proudly presented to",
+            subtitle_style
+        )
+    )
+
+    story.append(
+        Paragraph(
+            learner_user.name,
+            learner_style
+        )
+    )
+
+    story.append(
+        Paragraph(
+            f"for successfully completing the course<br/>"
+            f"<b>{course.title}</b>",
+            course_style
+        )
+    )
+
+    start_date = (
+        certificate.start_date.strftime("%d %B %Y")
+        if certificate.start_date
+        else "—"
+    )
+
+    end_date = (
+        certificate.end_date.strftime("%d %B %Y")
+        if certificate.end_date
+        else "—"
+    )
+
+    issued_date = (
+        certificate.created_at.strftime("%d %B %Y")
+        if certificate.created_at
+        else "—"
+    )
+
+    details = [
+        [
+            Paragraph(
+                f"<b>Certificate ID:</b><br/>"
+                f"{certificate.certificate_id}",
+                detail_style
+            ),
+            Paragraph(
+                f"<b>Course Period:</b><br/>"
+                f"{start_date} — {end_date}",
+                detail_style
+            ),
+            Paragraph(
+                f"<b>Issued:</b><br/>"
+                f"{issued_date}",
+                detail_style
+            ),
+        ]
+    ]
+
+    details_table = Table(
+        details,
+        colWidths=[
+            75 * mm,
+            75 * mm,
+            55 * mm,
+        ],
+    )
+
+    details_table.setStyle(
+        TableStyle([
+            (
+                "VALIGN",
+                (0, 0),
+                (-1, -1),
+                "TOP"
+            ),
+            (
+                "ALIGN",
+                (0, 0),
+                (-1, -1),
+                "CENTER"
+            ),
+            (
+                "BOX",
+                (0, 0),
+                (-1, -1),
+                0.5,
+                colors.HexColor("#D1D5DB")
+            ),
+            (
+                "INNERGRID",
+                (0, 0),
+                (-1, -1),
+                0.25,
+                colors.HexColor("#E5E7EB")
+            ),
+            (
+                "BACKGROUND",
+                (0, 0),
+                (-1, -1),
+                colors.HexColor("#F9FAFB")
+            ),
+            (
+                "LEFTPADDING",
+                (0, 0),
+                (-1, -1),
+                10
+            ),
+            (
+                "RIGHTPADDING",
+                (0, 0),
+                (-1, -1),
+                10
+            ),
+            (
+                "TOPPADDING",
+                (0, 0),
+                (-1, -1),
+                10
+            ),
+            (
+                "BOTTOMPADDING",
+                (0, 0),
+                (-1, -1),
+                10
+            ),
+        ])
+    )
+
+    story.append(
+        details_table
+    )
+
+    story.append(
+        Spacer(
+            1,
+            8 * mm
+        )
+    )
+
+    qr_image_for_pdf = Image(
+        qr_buffer,
+        width=32 * mm,
+        height=32 * mm,
+    )
+
+    verification_text = Paragraph(
+        "<b>Verify this certificate</b><br/>"
+        "Scan the QR code or use the certificate ID "
+        "on the public verification page.",
+        detail_style
+    )
+
+    verification_table = Table(
+        [[qr_image_for_pdf, verification_text]],
+        colWidths=[
+            40 * mm,
+            100 * mm,
+        ],
+    )
+
+    verification_table.setStyle(
+        TableStyle([
+            (
+                "VALIGN",
+                (0, 0),
+                (-1, -1),
+                "MIDDLE"
+            ),
+            (
+                "ALIGN",
+                (0, 0),
+                (0, 0),
+                "CENTER"
+            ),
+        ])
+    )
+
+    story.append(
+        verification_table
+    )
+
+    story.append(
+        Spacer(
+            1,
+            5 * mm
+        )
+    )
+
+    status_text = (
+        "VALID"
+        if certificate.status == "valid"
+        else certificate.status.upper()
+    )
+
+    status_style = ParagraphStyle(
+        "CertificateStatus",
+        parent=detail_style,
+        fontName="Helvetica-Bold",
+        fontSize=11,
+        alignment=TA_CENTER,
+        textColor=(
+            colors.HexColor("#166534")
+            if certificate.status == "valid"
+            else colors.HexColor("#991B1B")
+        ),
+    )
+
+    story.append(
+        Paragraph(
+            f"Certificate Status: {status_text}",
+            status_style
+        )
+    )
+
+    document.build(story)
+
+    pdf_buffer.seek(0)
+
+    filename = (
+        f"certificate-{certificate.certificate_id}.pdf"
+    )
+
+    from flask import send_file
+
+    return send_file(
+        pdf_buffer,
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=filename,
+    )
 
 @api.get("/certificates/<string:certificate_number>")
 def verify_certificate(certificate_number):
@@ -4285,6 +6344,1180 @@ def trainer_course_learners(user, course_id):
         "has_previous": pagination.has_prev
     }
 })
+
+# ============================================================
+# TRAINER ANALYTICS
+# ============================================================
+
+@api.get("/trainer/analytics")
+@role_required("trainer")
+def trainer_analytics(user):
+
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    # --------------------------------------------------------
+    # Get all courses owned by this trainer
+    # --------------------------------------------------------
+
+    courses = Course.query.filter_by(
+        trainer_id=trainer.id
+    ).all()
+
+    course_ids = [
+        course.id
+        for course in courses
+    ]
+
+    # --------------------------------------------------------
+    # SUMMARY
+    # --------------------------------------------------------
+
+    total_courses = len(courses)
+
+    total_learners = (
+        db.session.query(
+            db.func.count(
+                db.distinct(Enrollment.learner_id)
+            )
+        )
+        .filter(
+            Enrollment.course_id.in_(course_ids)
+        )
+        .scalar()
+        if course_ids
+        else 0
+    )
+
+    total_assignments = (
+        Assignment.query
+        .filter(
+            Assignment.course_id.in_(course_ids)
+        )
+        .count()
+        if course_ids
+        else 0
+    )
+
+    total_quizzes = (
+        Quiz.query
+        .filter(
+            Quiz.course_id.in_(course_ids)
+        )
+        .count()
+        if course_ids
+        else 0
+    )
+
+    # --------------------------------------------------------
+    # LESSON DROP-OFF ANALYTICS
+    # --------------------------------------------------------
+
+    lesson_dropoff = []
+
+    if course_ids:
+
+        modules = Module.query.filter(
+            Module.course_id.in_(course_ids)
+        ).all()
+
+        module_map = {
+            module.id: module
+            for module in modules
+        }
+
+        module_ids = [
+            module.id
+            for module in modules
+        ]
+
+        lessons = (
+            Lesson.query
+            .filter(
+                Lesson.module_id.in_(module_ids)
+            )
+            .order_by(
+                Lesson.order_no.asc()
+            )
+            .all()
+            if module_ids
+            else []
+        )
+
+        for lesson in lessons:
+
+            module = module_map.get(
+                lesson.module_id
+            )
+
+            if not module:
+                continue
+
+            course = next(
+                (
+                    c for c in courses
+                    if c.id == module.course_id
+                ),
+                None
+            )
+
+            if not course:
+                continue
+
+            progress_rows = (
+                LessonProgress.query
+                .filter_by(
+                    lesson_id=lesson.id
+                )
+                .all()
+            )
+
+            started_count = len(
+                progress_rows
+            )
+
+            completed_count = sum(
+                1
+                for row in progress_rows
+                if row.completed
+            )
+
+            dropoff_count = max(
+                started_count - completed_count,
+                0
+            )
+
+            dropoff_percentage = (
+                round(
+                    (
+                        dropoff_count
+                        /
+                        started_count
+                    ) * 100,
+                    2
+                )
+                if started_count
+                else 0
+            )
+
+            lesson_dropoff.append({
+
+                "lesson_id": lesson.id,
+
+                "lesson_title": lesson.title,
+
+                "course_id": course.id,
+
+                "course_title": course.title,
+
+                "duration": lesson.duration,
+
+                "started": started_count,
+
+                "completed": completed_count,
+
+                "dropoff": dropoff_count,
+
+                "dropoff_percentage":
+                    dropoff_percentage
+            })
+
+    # --------------------------------------------------------
+    # QUIZ QUESTION ANALYTICS
+    # --------------------------------------------------------
+
+    quiz_questions = []
+
+    if course_ids:
+
+        quizzes = Quiz.query.filter(
+            Quiz.course_id.in_(course_ids)
+        ).all()
+
+        quiz_map = {
+            quiz.id: quiz
+            for quiz in quizzes
+        }
+
+        quiz_ids = [
+            quiz.id
+            for quiz in quizzes
+        ]
+
+        questions = (
+            Question.query
+            .filter(
+                Question.quiz_id.in_(quiz_ids)
+            )
+            .order_by(
+                Question.id.asc()
+            )
+            .all()
+            if quiz_ids
+            else []
+        )
+
+        for question in questions:
+
+            quiz = quiz_map.get(
+                question.quiz_id
+            )
+
+            if not quiz:
+                continue
+
+            answers = (
+                QuizAnswer.query
+                .filter_by(
+                    question_id=question.id
+                )
+                .all()
+            )
+
+            answered_count = sum(
+                1
+                for answer in answers
+                if answer.selected_answer
+                is not None
+            )
+
+            correct_count = sum(
+                1
+                for answer in answers
+                if answer.is_correct
+            )
+
+            wrong_count = sum(
+                1
+                for answer in answers
+                if (
+                    answer.selected_answer
+                    is not None
+                    and not answer.is_correct
+                )
+            )
+
+            wrong_percentage = (
+                round(
+                    (
+                        wrong_count
+                        /
+                        answered_count
+                    ) * 100,
+                    2
+                )
+                if answered_count
+                else 0
+            )
+
+            quiz_questions.append({
+
+                "question_id":
+                    question.id,
+
+                "quiz_id":
+                    quiz.id,
+
+                "quiz_title":
+                    quiz.title,
+
+                "course_id":
+                    quiz.course_id,
+
+                "question":
+                    question.question_text,
+
+                "attempts":
+                    answered_count,
+
+                "correct":
+                    correct_count,
+
+                "wrong":
+                    wrong_count,
+
+                "wrong_percentage":
+                    wrong_percentage
+            })
+
+    # --------------------------------------------------------
+    # ASSIGNMENT ANALYTICS
+    # --------------------------------------------------------
+
+    assignments = []
+
+    if course_ids:
+
+        assignment_rows = (
+            Assignment.query
+            .filter(
+                Assignment.course_id.in_(course_ids)
+            )
+            .order_by(
+                Assignment.id.desc()
+            )
+            .all()
+        )
+
+        for assignment in assignment_rows:
+
+            enrollments = (
+                Enrollment.query
+                .filter_by(
+                    course_id=assignment.course_id
+                )
+                .all()
+            )
+
+            enrolled_count = len(
+                enrollments
+            )
+
+            on_time_count = 0
+            late_count = 0
+            missing_count = 0
+            no_due_date_count = 0
+
+            for enrollment in enrollments:
+
+                submission = (
+                    AssignmentSubmission.query
+                    .filter_by(
+                        assignment_id=assignment.id,
+                        learner_id=(
+                            enrollment.learner_id
+                        )
+                    )
+                    .first()
+                )
+
+                if (
+                    not assignment.due_date
+                ):
+                    if (
+                        submission
+                        and submission.submitted_at
+                    ):
+                        no_due_date_count += 1
+
+                    continue
+
+                if (
+                    submission
+                    and submission.submitted_at
+                ):
+
+                    submitted_at = (
+                        submission.submitted_at
+                    )
+
+                    due_date = (
+                        assignment.due_date
+                    )
+
+                    # Handle timezone differences
+                    if (
+                        submitted_at.tzinfo
+                        is None
+                    ):
+                        submitted_at = (
+                            submitted_at.replace(
+                                tzinfo=timezone.utc
+                            )
+                        )
+
+                    if (
+                        due_date.tzinfo
+                        is None
+                    ):
+                        due_date = (
+                            due_date.replace(
+                                tzinfo=timezone.utc
+                            )
+                        )
+
+                    if submitted_at <= due_date:
+                        on_time_count += 1
+                    else:
+                        late_count += 1
+
+                else:
+
+                    now = datetime.now(
+                        timezone.utc
+                    )
+
+                    due_date = (
+                        assignment.due_date
+                    )
+
+                    if (
+                        due_date.tzinfo
+                        is None
+                    ):
+                        due_date = (
+                            due_date.replace(
+                                tzinfo=timezone.utc
+                            )
+                        )
+
+                    if now > due_date:
+                        missing_count += 1
+
+            assignments.append({
+
+                "assignment_id":
+                    assignment.id,
+
+                "title":
+                    assignment.title,
+
+                "course_id":
+                    assignment.course_id,
+
+                "due_date": (
+                    assignment.due_date.isoformat()
+                    if assignment.due_date
+                    else None
+                ),
+
+                "enrolled":
+                    enrolled_count,
+
+                "on_time":
+                    on_time_count,
+
+                "late":
+                    late_count,
+
+                "missing":
+                    missing_count,
+
+                "no_due_date":
+                    no_due_date_count
+            })
+
+    # --------------------------------------------------------
+    # Sort lesson drop-off by highest drop-off
+    # --------------------------------------------------------
+
+    lesson_dropoff.sort(
+        key=lambda item:
+            item["dropoff_percentage"],
+        reverse=True
+    )
+
+    # --------------------------------------------------------
+    # Sort quiz questions by highest wrong percentage
+    # --------------------------------------------------------
+
+    quiz_questions.sort(
+        key=lambda item:
+            item["wrong_percentage"],
+        reverse=True
+    )
+
+    # --------------------------------------------------------
+    # SUMMARY COUNTS
+    # --------------------------------------------------------
+
+    total_lesson_started = sum(
+        item["started"]
+        for item in lesson_dropoff
+    )
+
+    total_lesson_completed = sum(
+        item["completed"]
+        for item in lesson_dropoff
+    )
+
+    total_lesson_dropoff = sum(
+        item["dropoff"]
+        for item in lesson_dropoff
+    )
+
+    total_on_time = sum(
+        item["on_time"]
+        for item in assignments
+    )
+
+    total_late = sum(
+        item["late"]
+        for item in assignments
+    )
+
+    total_missing = sum(
+        item["missing"]
+        for item in assignments
+    )
+
+    return jsonify({
+
+        "summary": {
+
+            "courses":
+                total_courses,
+
+            "learners":
+                total_learners,
+
+            "assignments":
+                total_assignments,
+
+            "quizzes":
+                total_quizzes,
+
+            "lesson_started":
+                total_lesson_started,
+
+            "lesson_completed":
+                total_lesson_completed,
+
+            "lesson_dropoff":
+                total_lesson_dropoff,
+
+            "assignment_on_time":
+                total_on_time,
+
+            "assignment_late":
+                total_late,
+
+            "assignment_missing":
+                total_missing
+        },
+
+        "lesson_dropoff":
+            lesson_dropoff,
+
+        "quiz_questions":
+            quiz_questions,
+
+        "assignments":
+            assignments
+
+    }), 200
+
+
+# ============================================================
+# TRAINER — ALL STUDENTS
+# ============================================================
+
+@api.get("/trainer/students")
+@role_required("trainer")
+def trainer_students(user):
+
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    # --------------------------------------------------------
+    # QUERY PARAMETERS
+    # --------------------------------------------------------
+
+    search = (
+        request.args.get("search", "")
+        .strip()
+        .lower()
+    )
+
+    needs_attention_param = (
+        request.args.get(
+            "needs_attention",
+            ""
+        )
+        .strip()
+        .lower()
+    )
+
+    # --------------------------------------------------------
+    # GET TRAINER'S COURSES
+    # --------------------------------------------------------
+
+    courses = Course.query.filter_by(
+        trainer_id=trainer.id
+    ).all()
+
+    course_ids = [
+        course.id
+        for course in courses
+    ]
+
+    course_map = {
+        course.id: course
+        for course in courses
+    }
+
+    if not course_ids:
+        return jsonify({
+            "students": [],
+            "total": 0
+        }), 200
+
+    # --------------------------------------------------------
+    # GET ENROLLMENTS
+    # --------------------------------------------------------
+
+    enrollments = (
+        Enrollment.query
+        .filter(
+            Enrollment.course_id.in_(
+                course_ids
+            )
+        )
+        .order_by(
+            Enrollment.id.desc()
+        )
+        .all()
+    )
+
+    students = []
+
+    # --------------------------------------------------------
+    # BUILD STUDENT DATA
+    # --------------------------------------------------------
+
+    for enrollment in enrollments:
+
+        learner = Learner.query.get(
+            enrollment.learner_id
+        )
+
+        if not learner:
+            continue
+
+        learner_user = User.query.get(
+            learner.user_id
+        )
+
+        if not learner_user:
+            continue
+
+        course = course_map.get(
+            enrollment.course_id
+        )
+
+        if not course:
+            continue
+
+        # ----------------------------------------------------
+        # SEARCH
+        # ----------------------------------------------------
+
+        searchable_text = (
+            f"{learner_user.name or ''} "
+            f"{learner_user.email or ''}"
+        ).lower()
+
+        if search and search not in searchable_text:
+            continue
+
+        # ----------------------------------------------------
+        # LAST ACTIVE
+        # ----------------------------------------------------
+
+        last_active = None
+
+        last_progress = (
+            db.session.query(LessonProgress)
+            .join(
+                Lesson,
+                Lesson.id == LessonProgress.lesson_id
+            )
+            .join(
+                Module,
+                Module.id == Lesson.module_id
+            )
+            .filter(
+                LessonProgress.learner_id == learner.id,
+                Module.course_id == course.id
+            )
+            .order_by(
+                LessonProgress.updated_at.desc()
+            )
+            .first()
+        )
+
+        if last_progress:
+            last_active = last_progress.updated_at
+
+        # ----------------------------------------------------
+        # QUIZ SCORE
+        # ----------------------------------------------------
+
+        quiz_ids = [
+            quiz.id
+            for quiz in Quiz.query.filter_by(
+                course_id=course.id
+            ).all()
+        ]
+
+        score_percentage = None
+
+        if quiz_ids:
+
+            attempts = (
+                QuizAttempt.query
+                .filter(
+                    QuizAttempt.learner_id
+                    == learner.id,
+
+                    QuizAttempt.quiz_id.in_(
+                        quiz_ids
+                    ),
+
+                    QuizAttempt.attempted_at
+                    != None
+                )
+                .order_by(
+                    QuizAttempt.attempted_at.desc()
+                )
+                .all()
+            )
+
+            if attempts:
+
+                total_score = 0
+                total_possible = 0
+
+                for attempt in attempts:
+
+                    total_score += (
+                        attempt.score or 0
+                    )
+
+                    total_possible += (
+                        attempt.total or 0
+                    )
+
+                if total_possible > 0:
+
+                    score_percentage = round(
+                        (
+                            total_score
+                            / total_possible
+                        ) * 100,
+                        2
+                    )
+
+        # ----------------------------------------------------
+        # NEEDS ATTENTION
+        # ----------------------------------------------------
+
+        progress_value = int(
+            enrollment.progress or 0
+        )
+
+        needs_attention = False
+
+        # Low progress
+        if progress_value < 40:
+            needs_attention = True
+
+        # No recent activity
+        if last_active is None:
+            needs_attention = True
+
+        # Low quiz score
+        if (
+            score_percentage is not None
+            and score_percentage < 50
+        ):
+            needs_attention = True
+
+        # ----------------------------------------------------
+        # FILTER
+        # ----------------------------------------------------
+
+        if needs_attention_param in (
+            "true",
+            "1",
+            "yes"
+        ):
+            if not needs_attention:
+                continue
+
+        elif needs_attention_param in (
+            "false",
+            "0",
+            "no"
+        ):
+            if needs_attention:
+                continue
+
+        # ----------------------------------------------------
+        # RESULT
+        # ----------------------------------------------------
+
+        students.append({
+
+            "learner_id":
+                learner.id,
+
+            "enrollment_id":
+                enrollment.id,
+
+            "name":
+                learner_user.name,
+
+            "email":
+                learner_user.email,
+
+            "mobile":
+                learner_user.mobile,
+
+            "course_id":
+                course.id,
+
+            "course_title":
+                course.title,
+
+            "progress":
+                progress_value,
+
+            "score":
+                score_percentage,
+
+            "last_active":
+                (
+                    last_active.isoformat()
+                    if last_active
+                    else None
+                ),
+
+            "status":
+                enrollment.status,
+
+            "enrolled_at":
+                (
+                    enrollment.enrolled_at.isoformat()
+                    if enrollment.enrolled_at
+                    else None
+                ),
+
+            "needs_attention":
+                needs_attention
+        })
+
+    # --------------------------------------------------------
+    # RESPONSE
+    # --------------------------------------------------------
+
+    return jsonify({
+
+        "students": students,
+
+        "total": len(students)
+
+    }), 200
+
+# ============================================================
+# TRAINER — ATTENDANCE
+# ============================================================
+
+@api.get("/trainer/batches")
+@role_required("trainer")
+def trainer_batches(user):
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    batches = (
+        Batch.query
+        .filter_by(trainer_id=trainer.id)
+        .order_by(Batch.id.desc())
+        .all()
+    )
+
+    result = []
+
+    for batch in batches:
+        learner_count = Learner.query.filter_by(
+            batch_id=batch.id
+        ).count()
+
+        course = (
+            db.session.get(Course, batch.course_id)
+            if batch.course_id
+            else None
+        )
+
+        result.append({
+            "id": batch.id,
+            "name": batch.name,
+            "course_id": batch.course_id,
+            "course_title": (
+                course.title
+                if course
+                else None
+            ),
+            "start_date": (
+                batch.start_date.isoformat()
+                if batch.start_date
+                else None
+            ),
+            "end_date": (
+                batch.end_date.isoformat()
+                if batch.end_date
+                else None
+            ),
+            "status": batch.status,
+            "learner_count": learner_count
+        })
+
+    return jsonify({
+        "batches": result,
+        "total": len(result)
+    }), 200
+
+
+@api.get("/trainer/batches/<int:batch_id>/attendance")
+@role_required("trainer")
+def trainer_batch_attendance(user, batch_id):
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    batch = Batch.query.filter_by(
+        id=batch_id,
+        trainer_id=trainer.id
+    ).first()
+
+    if not batch:
+        return jsonify({
+            "error": "Batch not found"
+        }), 404
+
+    date_value = request.args.get("date")
+
+    if not date_value:
+        return jsonify({
+            "error": "Date is required"
+        }), 400
+
+    try:
+        attendance_date = datetime.strptime(
+            date_value,
+            "%Y-%m-%d"
+        ).date()
+    except (TypeError, ValueError):
+        return jsonify({
+            "error": "Date must use YYYY-MM-DD format"
+        }), 400
+
+    learners = (
+        Learner.query
+        .filter_by(batch_id=batch.id)
+        .order_by(Learner.id.asc())
+        .all()
+    )
+
+    attendance_records = Attendance.query.filter_by(
+        batch_id=batch.id,
+        date=attendance_date
+    ).all()
+
+    attendance_by_learner = {
+        record.learner_id: record
+        for record in attendance_records
+    }
+
+    result = []
+
+    for learner in learners:
+        record = attendance_by_learner.get(
+            learner.id
+        )
+
+        result.append({
+            "learner_id": learner.id,
+            "name": (
+                learner.user.name
+                if learner.user
+                else None
+            ),
+            "email": (
+                learner.user.email
+                if learner.user
+                else None
+            ),
+            "status": (
+                record.status
+                if record
+                else None
+            ),
+            "attendance_id": (
+                record.id
+                if record
+                else None
+            )
+        })
+
+    return jsonify({
+        "batch": {
+            "id": batch.id,
+            "name": batch.name
+        },
+        "date": attendance_date.isoformat(),
+        "learners": result,
+        "total": len(result)
+    }), 200
+
+
+@api.post("/trainer/batches/<int:batch_id>/attendance")
+@role_required("trainer")
+def trainer_mark_batch_attendance(user, batch_id):
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    batch = Batch.query.filter_by(
+        id=batch_id,
+        trainer_id=trainer.id
+    ).first()
+
+    if not batch:
+        return jsonify({
+            "error": "Batch not found"
+        }), 404
+
+    data = request.get_json(
+        silent=True
+    ) or {}
+
+    date_value = data.get("date")
+    records = data.get("attendance")
+
+    if not date_value:
+        return jsonify({
+            "error": "Date is required"
+        }), 400
+
+    if not isinstance(records, list):
+        return jsonify({
+            "error": "attendance must be a list"
+        }), 400
+
+    try:
+        attendance_date = datetime.strptime(
+            str(date_value),
+            "%Y-%m-%d"
+        ).date()
+    except (TypeError, ValueError):
+        return jsonify({
+            "error": "Date must use YYYY-MM-DD format"
+        }), 400
+
+    valid_statuses = {
+        "present",
+        "absent",
+        "late"
+    }
+
+    learner_ids = {
+        learner.id
+        for learner in Learner.query.filter_by(
+            batch_id=batch.id
+        ).all()
+    }
+
+    updated = []
+
+    for item in records:
+        if not isinstance(item, dict):
+            return jsonify({
+                "error": "Each attendance record must be an object"
+            }), 400
+
+        learner_id = item.get("learner_id")
+        status = str(
+            item.get("status", "")
+        ).strip().lower()
+
+        if learner_id is None:
+            return jsonify({
+                "error": "learner_id is required"
+            }), 400
+
+        try:
+            learner_id = int(learner_id)
+        except (TypeError, ValueError):
+            return jsonify({
+                "error": "learner_id must be an integer"
+            }), 400
+
+        if learner_id not in learner_ids:
+            return jsonify({
+                "error": (
+                    f"Learner {learner_id} "
+                    "does not belong to this batch"
+                )
+            }), 400
+
+        if status not in valid_statuses:
+            return jsonify({
+                "error": (
+                    "Status must be present, absent, or late"
+                )
+            }), 400
+
+        record = Attendance.query.filter_by(
+            learner_id=learner_id,
+            batch_id=batch.id,
+            date=attendance_date
+        ).first()
+
+        if record:
+            record.status = status
+            record.marked_by = user.id
+        else:
+            record = Attendance(
+                learner_id=learner_id,
+                batch_id=batch.id,
+                date=attendance_date,
+                status=status,
+                marked_by=user.id
+            )
+            db.session.add(record)
+
+        updated.append({
+            "learner_id": learner_id,
+            "status": status
+        })
+
+    db.session.commit()
+
+    return jsonify({
+        "message": "Attendance saved successfully",
+        "batch_id": batch.id,
+        "date": attendance_date.isoformat(),
+        "attendance": updated
+    }), 200
 
 
 # ============================================================
@@ -5012,6 +8245,1905 @@ def learner_submit_assignment(
             "score": submission.grade,
             "feedback": submission.feedback
         }
+    })
+
+# ============================================================
+# QUESTION BANK
+# ============================================================
+
+@api.post("/trainer/question-banks")
+@role_required("trainer")
+def create_question_bank(user):
+
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    data = request.get_json(silent=True) or {}
+
+    title = str(
+        data.get("title", "")
+    ).strip()
+
+    description = str(
+        data.get("description", "")
+    ).strip()
+
+    if not title:
+        return jsonify({
+            "error": "Question bank title is required"
+        }), 400
+
+    bank = QuestionBank(
+        trainer_id=trainer.id,
+        title=title,
+        description=description
+    )
+
+    db.session.add(bank)
+    db.session.commit()
+
+    return jsonify({
+        "message": "Question bank created successfully",
+        "bank": {
+            "id": bank.id,
+            "trainer_id": bank.trainer_id,
+            "title": bank.title,
+            "description": bank.description,
+            "created_at": (
+                bank.created_at.isoformat()
+                if bank.created_at
+                else None
+            )
+        }
+    }), 201
+
+
+@api.get("/trainer/question-banks")
+@role_required("trainer")
+def get_question_banks(user):
+
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    banks = (
+        QuestionBank.query
+        .filter_by(
+            trainer_id=trainer.id
+        )
+        .order_by(
+            QuestionBank.id.desc()
+        )
+        .all()
+    )
+
+    return jsonify({
+        "banks": [
+            {
+                "id": bank.id,
+                "title": bank.title,
+                "description": bank.description,
+                "created_at": (
+                    bank.created_at.isoformat()
+                    if bank.created_at
+                    else None
+                )
+            }
+            for bank in banks
+        ]
+    }), 200
+
+
+@api.get("/trainer/question-banks/<int:bank_id>")
+@role_required("trainer")
+def get_question_bank(user, bank_id):
+
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    bank = QuestionBank.query.filter_by(
+        id=bank_id,
+        trainer_id=trainer.id
+    ).first()
+
+    if not bank:
+        return jsonify({
+            "error": "Question bank not found"
+        }), 404
+
+    questions = (
+        QuestionBankItem.query
+        .filter_by(
+            bank_id=bank.id
+        )
+        .order_by(
+            QuestionBankItem.id.asc()
+        )
+        .all()
+    )
+
+    return jsonify({
+        "bank": {
+            "id": bank.id,
+            "title": bank.title,
+            "description": bank.description,
+            "created_at": (
+                bank.created_at.isoformat()
+                if bank.created_at
+                else None
+            ),
+            "questions": [
+                {
+                    "id": question.id,
+                    "question_type": question.question_type,
+                    "question_text": question.question_text,
+                    "option_a": question.option_a,
+                    "option_b": question.option_b,
+                    "option_c": question.option_c,
+                    "option_d": question.option_d,
+                    "correct_answer": question.correct_answer,
+                    "coding_description": question.coding_description,
+                    "starter_code": question.starter_code,
+                    "language": question.language,
+                    "difficulty": question.difficulty,
+                    "marks": question.marks,
+                    "created_at": (
+                        question.created_at.isoformat()
+                        if question.created_at
+                        else None
+                    )
+                }
+                for question in questions
+            ]
+        }
+    }), 200
+
+
+@api.put("/trainer/question-banks/<int:bank_id>")
+@role_required("trainer")
+def update_question_bank(user, bank_id):
+
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    bank = QuestionBank.query.filter_by(
+        id=bank_id,
+        trainer_id=trainer.id
+    ).first()
+
+    if not bank:
+        return jsonify({
+            "error": "Question bank not found"
+        }), 404
+
+    data = request.get_json(silent=True) or {}
+
+    if "title" in data:
+        title = str(
+            data.get("title", "")
+        ).strip()
+
+        if not title:
+            return jsonify({
+                "error": "Question bank title is required"
+            }), 400
+
+        bank.title = title
+
+    if "description" in data:
+        bank.description = str(
+            data.get("description", "")
+        ).strip()
+
+    db.session.commit()
+
+    return jsonify({
+        "message": "Question bank updated successfully"
+    }), 200
+
+
+@api.delete("/trainer/question-banks/<int:bank_id>")
+@role_required("trainer")
+def delete_question_bank(user, bank_id):
+
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    bank = QuestionBank.query.filter_by(
+        id=bank_id,
+        trainer_id=trainer.id
+    ).first()
+
+    if not bank:
+        return jsonify({
+            "error": "Question bank not found"
+        }), 404
+
+    QuestionBankItem.query.filter_by(
+        bank_id=bank.id
+    ).delete(
+        synchronize_session=False
+    )
+
+    db.session.delete(bank)
+    db.session.commit()
+
+    return jsonify({
+        "message": "Question bank deleted successfully"
+    }), 200
+
+
+# ============================================================
+# QUESTION BANK ITEMS
+# ============================================================
+
+@api.post("/trainer/question-banks/<int:bank_id>/questions")
+@role_required("trainer")
+def create_question_bank_item(user, bank_id):
+
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    bank = QuestionBank.query.filter_by(
+        id=bank_id,
+        trainer_id=trainer.id
+    ).first()
+
+    if not bank:
+        return jsonify({
+            "error": "Question bank not found"
+        }), 404
+
+    data = request.get_json(silent=True) or {}
+
+    question_type = str(
+        data.get("question_type", "")
+    ).strip().lower()
+
+    question_text = str(
+        data.get("question_text", "")
+    ).strip()
+
+    if question_type not in (
+        "mcq",
+        "coding"
+    ):
+        return jsonify({
+            "error": "question_type must be mcq or coding"
+        }), 400
+
+    if not question_text:
+        return jsonify({
+            "error": "question_text is required"
+        }), 400
+
+    question = QuestionBankItem(
+        bank_id=bank.id,
+        question_type=question_type,
+        question_text=question_text,
+        option_a=data.get("option_a"),
+        option_b=data.get("option_b"),
+        option_c=data.get("option_c"),
+        option_d=data.get("option_d"),
+        correct_answer=data.get("correct_answer"),
+        coding_description=data.get(
+            "coding_description",
+            ""
+        ),
+        starter_code=data.get(
+            "starter_code",
+            ""
+        ),
+        language=data.get(
+            "language",
+            "python"
+        ),
+        difficulty=data.get(
+            "difficulty",
+            "medium"
+        ),
+        marks=int(
+            data.get("marks", 1)
+        )
+    )
+
+    if question_type == "mcq":
+        if not question.correct_answer:
+            return jsonify({
+                "error": "correct_answer is required for MCQ"
+            }), 400
+
+    if question_type == "coding":
+        question.coding_description = (
+            str(
+                data.get(
+                    "coding_description",
+                    ""
+                )
+            ).strip()
+        )
+
+        if not question.coding_description:
+            return jsonify({
+                "error": (
+                    "coding_description is required "
+                    "for coding questions"
+                )
+            }), 400
+
+    db.session.add(question)
+    db.session.commit()
+
+    return jsonify({
+        "message": "Question added to question bank",
+        "question": {
+            "id": question.id,
+            "bank_id": question.bank_id,
+            "question_type": question.question_type,
+            "question_text": question.question_text,
+            "marks": question.marks
+        }
+    }), 201
+
+
+@api.get(
+    "/trainer/question-banks/<int:bank_id>/questions"
+)
+@role_required("trainer")
+def get_question_bank_items(user, bank_id):
+
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    bank = QuestionBank.query.filter_by(
+        id=bank_id,
+        trainer_id=trainer.id
+    ).first()
+
+    if not bank:
+        return jsonify({
+            "error": "Question bank not found"
+        }), 404
+
+    questions = (
+        QuestionBankItem.query
+        .filter_by(
+            bank_id=bank.id
+        )
+        .order_by(
+            QuestionBankItem.id.asc()
+        )
+        .all()
+    )
+
+    return jsonify({
+        "questions": [
+            {
+                "id": question.id,
+                "question_type": question.question_type,
+                "question_text": question.question_text,
+                "option_a": question.option_a,
+                "option_b": question.option_b,
+                "option_c": question.option_c,
+                "option_d": question.option_d,
+                "correct_answer": question.correct_answer,
+                "coding_description": question.coding_description,
+                "starter_code": question.starter_code,
+                "language": question.language,
+                "difficulty": question.difficulty,
+                "marks": question.marks
+            }
+            for question in questions
+        ]
+    }), 200
+
+
+@api.put(
+    "/trainer/question-bank-questions/<int:question_id>"
+)
+@role_required("trainer")
+def update_question_bank_item(user, question_id):
+
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    question = db.session.get(
+        QuestionBankItem,
+        question_id
+    )
+
+    if not question:
+        return jsonify({
+            "error": "Question not found"
+        }), 404
+
+    bank = QuestionBank.query.filter_by(
+        id=question.bank_id,
+        trainer_id=trainer.id
+    ).first()
+
+    if not bank:
+        return jsonify({
+            "error": "Question not found"
+        }), 404
+
+    data = request.get_json(silent=True) or {}
+
+    if "question_type" in data:
+        question_type = str(
+            data.get("question_type", "")
+        ).strip().lower()
+
+        if question_type not in (
+            "mcq",
+            "coding"
+        ):
+            return jsonify({
+                "error": (
+                    "question_type must be "
+                    "mcq or coding"
+                )
+            }), 400
+
+        question.question_type = question_type
+
+    if "question_text" in data:
+        question.question_text = str(
+            data.get("question_text", "")
+        ).strip()
+
+    for field in (
+        "option_a",
+        "option_b",
+        "option_c",
+        "option_d",
+        "correct_answer",
+        "coding_description",
+        "starter_code",
+        "language",
+        "difficulty"
+    ):
+        if field in data:
+            setattr(
+                question,
+                field,
+                data.get(field)
+            )
+
+    if "marks" in data:
+        try:
+            question.marks = int(
+                data.get("marks")
+            )
+        except (
+            TypeError,
+            ValueError
+        ):
+            return jsonify({
+                "error": "marks must be an integer"
+            }), 400
+
+    if (
+        question.question_type == "mcq"
+        and not question.correct_answer
+    ):
+        return jsonify({
+            "error": (
+                "correct_answer is required "
+                "for MCQ"
+            )
+        }), 400
+
+    if (
+        question.question_type == "coding"
+        and not str(
+            question.coding_description or ""
+        ).strip()
+    ):
+        return jsonify({
+            "error": (
+                "coding_description is required "
+                "for coding questions"
+            )
+        }), 400
+
+    db.session.commit()
+
+    return jsonify({
+        "message": "Question updated successfully"
+    }), 200
+
+
+@api.delete(
+    "/trainer/question-bank-questions/<int:question_id>"
+)
+@role_required("trainer")
+def delete_question_bank_item(user, question_id):
+
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    question = db.session.get(
+        QuestionBankItem,
+        question_id
+    )
+
+    if not question:
+        return jsonify({
+            "error": "Question not found"
+        }), 404
+
+    bank = QuestionBank.query.filter_by(
+        id=question.bank_id,
+        trainer_id=trainer.id
+    ).first()
+
+    if not bank:
+        return jsonify({
+            "error": "Question not found"
+        }), 404
+
+    db.session.delete(question)
+    db.session.commit()
+
+    return jsonify({
+        "message": "Question deleted successfully"
+    }), 200
+
+# ============================================================
+# MIXED EXAMS
+# ============================================================
+
+@api.post("/trainer/mixed-exams")
+@role_required("trainer")
+def create_mixed_exam(user):
+
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    data = request.get_json(silent=True) or {}
+
+    title = str(
+        data.get("title", "")
+    ).strip()
+
+    description = str(
+        data.get("description", "")
+    ).strip()
+
+    course_id = str(
+        data.get("course_id", "")
+    ).strip()
+
+    if not title:
+        return jsonify({
+            "error": "Exam title is required"
+        }), 400
+
+    if not course_id:
+        return jsonify({
+            "error": "course_id is required"
+        }), 400
+
+    course = Course.query.filter_by(
+        id=course_id
+    ).first()
+
+    if not course:
+        return jsonify({
+            "error": "Course not found"
+        }), 404
+
+    try:
+        duration_minutes = int(
+            data.get("duration_minutes", 60)
+        )
+    except (
+        TypeError,
+        ValueError
+    ):
+        return jsonify({
+            "error": "duration_minutes must be an integer"
+        }), 400
+
+    if duration_minutes <= 0:
+        return jsonify({
+            "error": "duration_minutes must be greater than 0"
+        }), 400
+
+    exam = MixedExam(
+        title=title,
+        description=description,
+        course_id=course_id,
+        trainer_id=trainer.id,
+        duration_minutes=duration_minutes,
+        total_marks=0,
+        status="draft"
+    )
+
+    db.session.add(exam)
+    db.session.commit()
+
+    return jsonify({
+        "message": "Mixed exam created successfully",
+        "exam": {
+            "id": exam.id,
+            "title": exam.title,
+            "description": exam.description,
+            "course_id": exam.course_id,
+            "trainer_id": exam.trainer_id,
+            "duration_minutes": exam.duration_minutes,
+            "total_marks": exam.total_marks,
+            "status": exam.status,
+            "created_at": (
+                exam.created_at.isoformat()
+                if exam.created_at
+                else None
+            )
+        }
+    }), 201
+
+# ============================================================
+# UPDATE MIXED EXAM STATUS
+# ============================================================
+
+@api.put("/trainer/mixed-exams/<int:exam_id>/status")
+@role_required("trainer")
+def update_mixed_exam_status(user, exam_id):
+
+    exam = MixedExam.query.filter_by(
+        id=exam_id
+    ).first()
+
+    if not exam:
+        return jsonify({
+            "error": "Mixed exam not found"
+        }), 404
+
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    if exam.trainer_id != trainer.id:
+        return jsonify({
+            "error": "You do not have permission to update this exam"
+        }), 403
+
+    data = request.get_json(silent=True) or {}
+
+    status = str(
+        data.get("status", "")
+    ).strip().lower()
+
+    allowed_statuses = {
+        "draft",
+        "published",
+        "closed"
+    }
+
+    if status not in allowed_statuses:
+        return jsonify({
+            "error": (
+                "Invalid status. "
+                "Allowed values are: draft, published, closed"
+            )
+        }), 400
+
+    exam.status = status
+
+    db.session.commit()
+
+    return jsonify({
+        "message": "Mixed exam status updated successfully",
+        "exam": {
+            "id": exam.id,
+            "title": exam.title,
+            "status": exam.status
+        }
+    }), 200
+
+@api.get("/trainer/mixed-exams")
+@role_required("trainer")
+def get_mixed_exams(user):
+
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    exams = (
+        MixedExam.query
+        .filter_by(
+            trainer_id=trainer.id
+        )
+        .order_by(
+            MixedExam.id.desc()
+        )
+        .all()
+    )
+
+    return jsonify({
+        "exams": [
+            {
+                "id": exam.id,
+                "title": exam.title,
+                "description": exam.description,
+                "course_id": exam.course_id,
+                "duration_minutes": exam.duration_minutes,
+                "total_marks": exam.total_marks,
+                "status": exam.status,
+                "created_at": (
+                    exam.created_at.isoformat()
+                    if exam.created_at
+                    else None
+                )
+            }
+            for exam in exams
+        ]
+    }), 200
+
+@api.post("/trainer/mixed-exams/<int:exam_id>/sections")
+@role_required("trainer")
+def create_mixed_exam_section(user, exam_id):
+
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    exam = MixedExam.query.filter_by(
+        id=exam_id,
+        trainer_id=trainer.id
+    ).first()
+
+    if not exam:
+        return jsonify({
+            "error": "Mixed exam not found"
+        }), 404
+
+    data = request.get_json(silent=True) or {}
+
+    title = str(
+        data.get("title", "")
+    ).strip()
+
+    section_type = str(
+        data.get("section_type", "")
+    ).strip().lower()
+
+    if not title:
+        return jsonify({
+            "error": "Section title is required"
+        }), 400
+
+    if section_type not in (
+        "mcq",
+        "coding"
+    ):
+        return jsonify({
+            "error": "section_type must be mcq or coding"
+        }), 400
+
+    try:
+        order_index = int(
+            data.get("order_index", 0)
+        )
+    except (
+        TypeError,
+        ValueError
+    ):
+        return jsonify({
+            "error": "order_index must be an integer"
+        }), 400
+
+    section = MixedExamSection(
+        exam_id=exam.id,
+        title=title,
+        section_type=section_type,
+        order_index=order_index,
+        marks=0
+    )
+
+    db.session.add(section)
+    db.session.commit()
+
+    return jsonify({
+        "message": "Mixed exam section created successfully",
+        "section": {
+            "id": section.id,
+            "exam_id": section.exam_id,
+            "title": section.title,
+            "section_type": section.section_type,
+            "order_index": section.order_index,
+            "marks": section.marks
+        }
+    }), 201
+
+@api.post("/trainer/mixed-exam-sections/<int:section_id>/questions")
+@role_required("trainer")
+def add_mixed_exam_question(user, section_id):
+
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    section = db.session.get(
+        MixedExamSection,
+        section_id
+    )
+
+    if not section:
+        return jsonify({
+            "error": "Mixed exam section not found"
+        }), 404
+
+    exam = MixedExam.query.filter_by(
+        id=section.exam_id,
+        trainer_id=trainer.id
+    ).first()
+
+    if not exam:
+        return jsonify({
+            "error": "Mixed exam not found"
+        }), 404
+
+    data = request.get_json(silent=True) or {}
+
+    try:
+        question_bank_item_id = int(
+            data.get("question_bank_item_id")
+        )
+    except (
+        TypeError,
+        ValueError
+    ):
+        return jsonify({
+            "error": "question_bank_item_id must be an integer"
+        }), 400
+
+    question = db.session.get(
+        QuestionBankItem,
+        question_bank_item_id
+    )
+
+    if not question:
+        return jsonify({
+            "error": "Question bank question not found"
+        }), 404
+
+    bank = db.session.get(
+        QuestionBank,
+        question.bank_id
+    )
+
+    if not bank or bank.trainer_id != trainer.id:
+        return jsonify({
+            "error": "You do not have access to this question"
+        }), 403
+
+    if question.question_type != section.section_type:
+        return jsonify({
+            "error": (
+                "Question type does not match "
+                "the section type"
+            )
+        }), 400
+
+    try:
+        order_index = int(
+            data.get("order_index", 0)
+        )
+    except (
+        TypeError,
+        ValueError
+    ):
+        return jsonify({
+            "error": "order_index must be an integer"
+        }), 400
+
+    mixed_question = MixedExamQuestion(
+        section_id=section.id,
+        question_type=question.question_type,
+        question_bank_item_id=question.id,
+        question_text=question.question_text,
+        option_a=question.option_a,
+        option_b=question.option_b,
+        option_c=question.option_c,
+        option_d=question.option_d,
+        correct_answer=question.correct_answer,
+        coding_description=question.coding_description,
+        starter_code=question.starter_code,
+        language=question.language,
+        marks=question.marks,
+        order_index=order_index
+    )
+
+    db.session.add(mixed_question)
+
+    db.session.flush()
+
+    section.marks = (
+        db.session.query(
+            db.func.coalesce(
+                db.func.sum(
+                    MixedExamQuestion.marks
+                ),
+                0
+            )
+        )
+        .filter(
+            MixedExamQuestion.section_id == section.id
+        )
+        .scalar()
+        or 0
+    )
+
+    db.session.flush()
+
+    exam.total_marks = (
+        db.session.query(
+            db.func.coalesce(
+                db.func.sum(
+                    MixedExamQuestion.marks
+                ),
+                0
+            )
+        )
+        .join(
+            MixedExamSection,
+            MixedExamQuestion.section_id ==
+            MixedExamSection.id
+        )
+        .filter(
+            MixedExamSection.exam_id == exam.id
+        )
+        .scalar()
+        or 0
+    )
+
+    db.session.commit()
+
+    return jsonify({
+        "message": "Question added to mixed exam",
+        "question": {
+            "id": mixed_question.id,
+            "section_id": mixed_question.section_id,
+            "question_bank_item_id": (
+                mixed_question.question_bank_item_id
+            ),
+            "question_type": mixed_question.question_type,
+            "question_text": mixed_question.question_text,
+            "marks": mixed_question.marks,
+            "order_index": mixed_question.order_index
+        },
+        "section": {
+            "id": section.id,
+            "marks": section.marks
+        },
+        "exam": {
+            "id": exam.id,
+            "total_marks": exam.total_marks
+        }
+    }), 201
+
+@api.get("/trainer/mixed-exams/<int:exam_id>")
+@role_required("trainer")
+def get_mixed_exam(user, exam_id):
+
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    exam = MixedExam.query.filter_by(
+        id=exam_id,
+        trainer_id=trainer.id
+    ).first()
+
+    if not exam:
+        return jsonify({
+            "error": "Mixed exam not found"
+        }), 404
+
+    sections = (
+        MixedExamSection.query
+        .filter_by(
+            exam_id=exam.id
+        )
+        .order_by(
+            MixedExamSection.order_index.asc(),
+            MixedExamSection.id.asc()
+        )
+        .all()
+    )
+
+    section_data = []
+
+    for section in sections:
+
+        questions = (
+            MixedExamQuestion.query
+            .filter_by(
+                section_id=section.id
+            )
+            .order_by(
+                MixedExamQuestion.order_index.asc(),
+                MixedExamQuestion.id.asc()
+            )
+            .all()
+        )
+
+        section_data.append({
+            "id": section.id,
+            "title": section.title,
+            "section_type": section.section_type,
+            "order_index": section.order_index,
+            "marks": section.marks,
+            "questions": [
+                {
+                    "id": question.id,
+                    "question_bank_item_id": (
+                        question.question_bank_item_id
+                    ),
+                    "question_type": question.question_type,
+                    "question_text": question.question_text,
+                    "option_a": question.option_a,
+                    "option_b": question.option_b,
+                    "option_c": question.option_c,
+                    "option_d": question.option_d,
+                    "coding_description": (
+                        question.coding_description
+                    ),
+                    "starter_code": question.starter_code,
+                    "language": question.language,
+                    "marks": question.marks,
+                    "order_index": question.order_index
+                }
+                for question in questions
+            ]
+        })
+
+    return jsonify({
+        "exam": {
+            "id": exam.id,
+            "title": exam.title,
+            "description": exam.description,
+            "course_id": exam.course_id,
+            "trainer_id": exam.trainer_id,
+            "duration_minutes": exam.duration_minutes,
+            "total_marks": exam.total_marks,
+            "status": exam.status,
+            "created_at": (
+                exam.created_at.isoformat()
+                if exam.created_at
+                else None
+            ),
+            "sections": section_data
+        }
+    }), 200
+
+# ============================================================
+# MIXED EXAM INVITES
+# ============================================================
+
+@api.post("/trainer/mixed-exams/<int:exam_id>/invites")
+@role_required("trainer")
+def create_mixed_exam_invite(user, exam_id):
+
+    trainer = Trainer.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer profile not found"
+        }), 404
+
+    exam = MixedExam.query.filter_by(
+        id=exam_id,
+        trainer_id=trainer.id
+    ).first()
+
+    if not exam:
+        return jsonify({
+            "error": "Mixed exam not found"
+        }), 404
+
+    data = request.get_json(silent=True) or {}
+
+    candidate_name = str(
+        data.get("candidate_name", "")
+    ).strip()
+
+    candidate_email = str(
+        data.get("candidate_email", "")
+    ).strip()
+
+    try:
+        max_attempts = int(
+            data.get("max_attempts", 1)
+        )
+    except (
+        TypeError,
+        ValueError
+    ):
+        return jsonify({
+            "error": "max_attempts must be an integer"
+        }), 400
+
+    if max_attempts <= 0:
+        return jsonify({
+            "error": "max_attempts must be greater than 0"
+        }), 400
+
+    expires_at = None
+
+    if data.get("expires_at"):
+        try:
+            expires_at = datetime.fromisoformat(
+                str(data.get("expires_at")).replace(
+                    "Z",
+                    "+00:00"
+                )
+            )
+
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(
+                    tzinfo=timezone.utc
+                )
+
+        except ValueError:
+            return jsonify({
+                "error": (
+                    "expires_at must be a valid "
+                    "ISO datetime"
+                )
+            }), 400
+
+    invite_code = secrets.token_urlsafe(32)
+
+    invite = MixedExamInvite(
+        exam_id=exam.id,
+        invite_code=invite_code,
+        candidate_name=candidate_name or None,
+        candidate_email=candidate_email or None,
+        expires_at=expires_at,
+        max_attempts=max_attempts,
+        is_active=True
+    )
+
+    db.session.add(invite)
+    db.session.commit()
+
+    return jsonify({
+        "message": "Mixed exam invite created successfully",
+        "invite": {
+            "id": invite.id,
+            "exam_id": invite.exam_id,
+            "invite_code": invite.invite_code,
+            "candidate_name": invite.candidate_name,
+            "candidate_email": invite.candidate_email,
+            "expires_at": (
+                invite.expires_at.isoformat()
+                if invite.expires_at
+                else None
+            ),
+            "max_attempts": invite.max_attempts,
+            "is_active": invite.is_active,
+            "created_at": (
+                invite.created_at.isoformat()
+                if invite.created_at
+                else None
+            )
+        }
+    }), 201
+
+@api.get("/mixed-exam/invites/<string:invite_code>")
+def get_public_mixed_exam_invite(invite_code):
+
+    invite = MixedExamInvite.query.filter_by(
+        invite_code=invite_code,
+        is_active=True
+    ).first()
+
+    if not invite:
+        return jsonify({
+            "error": "Invalid or inactive invite"
+        }), 404
+
+    if invite.expires_at:
+        current_time = datetime.now(timezone.utc)
+
+        expires_at = invite.expires_at
+
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(
+                tzinfo=timezone.utc
+            )
+
+        if expires_at <= current_time:
+            return jsonify({
+                "error": "This invite has expired"
+            }), 410
+
+    exam = db.session.get(
+        MixedExam,
+        invite.exam_id
+    )
+
+    if not exam:
+        return jsonify({
+            "error": "Exam not found"
+        }), 404
+
+    sections = (
+        MixedExamSection.query
+        .filter_by(
+            exam_id=exam.id
+        )
+        .order_by(
+            MixedExamSection.order_index.asc(),
+            MixedExamSection.id.asc()
+        )
+        .all()
+    )
+
+    section_data = []
+
+    for section in sections:
+
+        questions = (
+            MixedExamQuestion.query
+            .filter_by(
+                section_id=section.id
+            )
+            .order_by(
+                MixedExamQuestion.order_index.asc(),
+                MixedExamQuestion.id.asc()
+            )
+            .all()
+        )
+
+        question_data = []
+
+        for question in questions:
+
+            item = {
+                "id": question.id,
+                "question_type": question.question_type,
+                "question_text": question.question_text,
+                "marks": question.marks,
+                "order_index": question.order_index
+            }
+
+            if question.question_type == "mcq":
+                item.update({
+                    "option_a": question.option_a,
+                    "option_b": question.option_b,
+                    "option_c": question.option_c,
+                    "option_d": question.option_d
+                })
+
+            elif question.question_type == "coding":
+                item.update({
+                    "coding_description": (
+                        question.coding_description
+                    ),
+                    "starter_code": question.starter_code,
+                    "language": question.language
+                })
+
+            question_data.append(item)
+
+        section_data.append({
+            "id": section.id,
+            "title": section.title,
+            "section_type": section.section_type,
+            "order_index": section.order_index,
+            "marks": section.marks,
+            "questions": question_data
+        })
+
+    return jsonify({
+        "invite": {
+            "id": invite.id,
+            "candidate_name": invite.candidate_name,
+            "candidate_email": invite.candidate_email,
+            "max_attempts": invite.max_attempts,
+            "expires_at": (
+                invite.expires_at.isoformat()
+                if invite.expires_at
+                else None
+            )
+        },
+        "exam": {
+            "id": exam.id,
+            "title": exam.title,
+            "description": exam.description,
+            "duration_minutes": exam.duration_minutes,
+            "total_marks": exam.total_marks,
+            "sections": section_data
+        }
+    }), 200
+
+@api.post("/mixed-exam/invites/<string:invite_code>/start")
+def start_public_mixed_exam(user=None, invite_code=None):
+
+    invite = MixedExamInvite.query.filter_by(
+        invite_code=invite_code,
+        is_active=True
+    ).first()
+
+    if not invite:
+        return jsonify({
+            "error": "Invalid or inactive invite"
+        }), 404
+
+    if invite.expires_at:
+        current_time = datetime.now(timezone.utc)
+
+        expires_at = invite.expires_at
+
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(
+                tzinfo=timezone.utc
+            )
+
+        if expires_at <= current_time:
+            return jsonify({
+                "error": "This invite has expired"
+            }), 410
+
+    exam = db.session.get(
+        MixedExam,
+        invite.exam_id
+    )
+
+    if not exam:
+        return jsonify({
+            "error": "Exam not found"
+        }), 404
+
+    data = request.get_json(silent=True) or {}
+
+    candidate_name = str(
+        data.get(
+            "candidate_name",
+            invite.candidate_name or ""
+        )
+    ).strip()
+
+    candidate_email = str(
+        data.get(
+            "candidate_email",
+            invite.candidate_email or ""
+        )
+    ).strip()
+
+    if not candidate_name:
+        return jsonify({
+            "error": "candidate_name is required"
+        }), 400
+
+    if not candidate_email:
+        return jsonify({
+            "error": "candidate_email is required"
+        }), 400
+
+    existing_attempts = MixedExamAttempt.query.filter_by(
+        invite_id=invite.id
+    ).count()
+
+    if existing_attempts >= invite.max_attempts:
+        return jsonify({
+            "error": "Maximum attempts reached for this invite"
+        }), 403
+
+    attempt = MixedExamAttempt(
+        exam_id=exam.id,
+        invite_id=invite.id,
+        candidate_name=candidate_name,
+        candidate_email=candidate_email,
+        status="in_progress",
+        score=0,
+        total_marks=exam.total_marks
+    )
+
+    db.session.add(attempt)
+    db.session.commit()
+
+    return jsonify({
+        "message": "Mixed exam started successfully",
+        "attempt": {
+            "id": attempt.id,
+            "exam_id": attempt.exam_id,
+            "invite_id": attempt.invite_id,
+            "candidate_name": attempt.candidate_name,
+            "candidate_email": attempt.candidate_email,
+            "status": attempt.status,
+            "started_at": (
+                attempt.started_at.isoformat()
+                if attempt.started_at
+                else None
+            ),
+            "total_marks": attempt.total_marks,
+            "duration_minutes": exam.duration_minutes
+        }
+    }), 201
+
+# ============================================================
+# MIXED EXAM ANSWERS
+# ============================================================
+
+@api.post("/mixed-exam/attempts/<int:attempt_id>/answers")
+def save_mixed_exam_answer(attempt_id):
+
+    attempt = db.session.get(
+        MixedExamAttempt,
+        attempt_id
+    )
+
+    if not attempt:
+        return jsonify({
+            "error": "Exam attempt not found"
+        }), 404
+
+    if attempt.status != "in_progress":
+        return jsonify({
+            "error": "This exam attempt is no longer active"
+        }), 403
+
+    data = request.get_json(silent=True) or {}
+
+    try:
+        question_id = int(
+            data.get("question_id")
+        )
+    except (
+        TypeError,
+        ValueError
+    ):
+        return jsonify({
+            "error": "question_id must be an integer"
+        }), 400
+
+    question = MixedExamQuestion.query.filter_by(
+        id=question_id
+    ).first()
+
+    if not question:
+        return jsonify({
+            "error": "Mixed exam question not found"
+        }), 404
+
+    section = db.session.get(
+        MixedExamSection,
+        question.section_id
+    )
+
+    if not section:
+        return jsonify({
+            "error": "Exam section not found"
+        }), 404
+
+    if section.exam_id != attempt.exam_id:
+        return jsonify({
+            "error": "Question does not belong to this exam"
+        }), 403
+
+    answer = MixedExamAnswer.query.filter_by(
+        attempt_id=attempt.id,
+        question_id=question.id
+    ).first()
+
+    if not answer:
+        answer = MixedExamAnswer(
+            attempt_id=attempt.id,
+            question_id=question.id
+        )
+
+        db.session.add(answer)
+
+    if question.question_type == "mcq":
+
+        selected_answer = str(
+            data.get(
+                "selected_answer",
+                ""
+            )
+        ).strip().upper()
+
+        if selected_answer not in (
+            "A",
+            "B",
+            "C",
+            "D"
+        ):
+            return jsonify({
+                "error": (
+                    "selected_answer must be "
+                    "A, B, C or D"
+                )
+            }), 400
+
+        answer.selected_answer = selected_answer
+        answer.source_code = None
+        answer.language = None
+
+        answer.is_correct = (
+            selected_answer ==
+            str(
+                question.correct_answer or ""
+            ).strip().upper()
+        )
+
+        answer.marks_awarded = (
+            question.marks
+            if answer.is_correct
+            else 0
+        )
+
+    elif question.question_type == "coding":
+
+        source_code = str(
+            data.get(
+                "source_code",
+                ""
+            )
+        )
+
+        language = str(
+            data.get(
+                "language",
+                question.language or "python"
+            )
+        ).strip()
+
+        if not source_code.strip():
+            return jsonify({
+                "error": "source_code is required"
+            }), 400
+
+        answer.source_code = source_code
+        answer.language = language
+        answer.selected_answer = None
+
+        # Coding questions are not scored here.
+        # They will be evaluated through the
+        # coding execution system during submission.
+        answer.is_correct = None
+        answer.marks_awarded = 0
+
+    else:
+
+        return jsonify({
+            "error": "Unsupported question type"
+        }), 400
+
+    answer.submitted_at = datetime.now(
+        timezone.utc
+    )
+
+    db.session.commit()
+
+    return jsonify({
+        "message": "Answer saved successfully",
+        "answer": {
+            "id": answer.id,
+            "attempt_id": answer.attempt_id,
+            "question_id": answer.question_id,
+            "question_type": question.question_type,
+            "marks_awarded": answer.marks_awarded
+        }
+    }), 200
+
+# ============================================================
+# PUBLIC MIXED EXAM - SUBMIT ATTEMPT
+# ============================================================
+
+@api.post("/mixed-exam/attempts/<int:attempt_id>/submit")
+def submit_mixed_exam_attempt(attempt_id):
+
+    attempt = MixedExamAttempt.query.get_or_404(
+        attempt_id
+    )
+
+    # --------------------------------------------------------
+    # Prevent submitting an already submitted attempt
+    # --------------------------------------------------------
+
+    if attempt.status == "submitted":
+        return jsonify({
+            "error": "This exam has already been submitted."
+        }), 400
+
+    if attempt.status != "in_progress":
+        return jsonify({
+            "error": "This exam attempt is no longer active."
+        }), 400
+
+    exam = MixedExam.query.get_or_404(
+        attempt.exam_id
+    )
+
+    # --------------------------------------------------------
+    # Check time limit
+    # --------------------------------------------------------
+
+    now = datetime.now(timezone.utc)
+
+    started_at = attempt.started_at
+
+    if started_at is not None:
+
+        # Make old naive datetime values timezone-aware.
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(
+                tzinfo=timezone.utc
+            )
+
+        elapsed_seconds = (
+            now - started_at
+        ).total_seconds()
+
+        allowed_seconds = (
+            int(exam.duration_minutes or 60)
+            * 60
+        )
+
+        # We allow submission when time has expired.
+        # The attempt is still submitted normally.
+        time_expired = (
+            elapsed_seconds >= allowed_seconds
+        )
+
+    else:
+        time_expired = False
+
+    # --------------------------------------------------------
+    # Get all exam questions
+    # --------------------------------------------------------
+
+    sections = MixedExamSection.query.filter_by(
+        exam_id=exam.id
+    ).order_by(
+        MixedExamSection.order_index.asc()
+    ).all()
+
+    question_ids = []
+
+    for section in sections:
+
+        section_questions = (
+            MixedExamQuestion.query
+            .filter_by(section_id=section.id)
+            .order_by(
+                MixedExamQuestion.order_index.asc()
+            )
+            .all()
+        )
+
+        for question in section_questions:
+            question_ids.append(
+                question.id
+            )
+
+    # --------------------------------------------------------
+    # Get saved answers
+    # --------------------------------------------------------
+
+    saved_answers = (
+        MixedExamAnswer.query
+        .filter_by(
+            attempt_id=attempt.id
+        )
+        .all()
+    )
+
+    answer_by_question = {
+        answer.question_id: answer
+        for answer in saved_answers
+    }
+
+    # --------------------------------------------------------
+    # Calculate score
+    # --------------------------------------------------------
+
+    score = 0
+    total_marks = 0
+    coding_pending = 0
+
+    for question_id in question_ids:
+
+        question = MixedExamQuestion.query.get(
+            question_id
+        )
+
+        if not question:
+            continue
+
+        total_marks += int(
+            question.marks or 0
+        )
+
+        answer = answer_by_question.get(
+            question.id
+        )
+
+        # ----------------------------------------------------
+        # MCQ
+        # ----------------------------------------------------
+
+        if question.question_type == "mcq":
+
+            if answer:
+
+                selected = (
+                    answer.selected_answer or ""
+                ).upper()
+
+                correct = (
+                    question.correct_answer or ""
+                ).upper()
+
+                if (
+                    selected
+                    and correct
+                    and selected == correct
+                ):
+
+                    answer.is_correct = True
+
+                    answer.marks_awarded = int(
+                        question.marks or 0
+                    )
+
+                    score += int(
+                        question.marks or 0
+                    )
+
+                else:
+
+                    answer.is_correct = False
+                    answer.marks_awarded = 0
+
+            else:
+
+                # No answer
+                pass
+
+        # ----------------------------------------------------
+        # CODING
+        # ----------------------------------------------------
+
+        elif question.question_type == "coding":
+
+            if answer:
+
+                # Coding execution/scoring will be added
+                # later using the coding runner.
+                answer.is_correct = None
+                answer.marks_awarded = 0
+
+            coding_pending += 1
+
+    # --------------------------------------------------------
+    # Update attempt
+    # --------------------------------------------------------
+
+    attempt.status = "submitted"
+
+    attempt.submitted_at = now
+
+    attempt.score = score
+
+    attempt.total_marks = total_marks
+
+    db.session.commit()
+
+    # --------------------------------------------------------
+    # Response
+    # --------------------------------------------------------
+
+    return jsonify({
+        "message": "Exam submitted successfully.",
+        "attempt": {
+            "id": attempt.id,
+            "exam_id": attempt.exam_id,
+            "candidate_name": attempt.candidate_name,
+            "candidate_email": attempt.candidate_email,
+            "status": attempt.status,
+            "score": attempt.score,
+            "total_marks": attempt.total_marks,
+            "submitted_at": (
+                attempt.submitted_at.isoformat()
+                if attempt.submitted_at
+                else None
+            ),
+        },
+        "coding_pending": coding_pending,
+        "time_expired": time_expired,
     })
 
 
@@ -6298,22 +11430,22 @@ def learner_submit_exam(
     for question in questions:
 
         selected_answer = submitted_answers.get(
-        str(question.id)
+            str(question.id)
         )
 
         correct_answer = str(
-        question.correct_answer or ""
+            question.correct_answer or ""
         ).strip().upper()
 
         is_correct = (
-        selected_answer is not None
-        and selected_answer == correct_answer
+            selected_answer is not None
+            and selected_answer == correct_answer
         )
 
         marks_awarded = (
-        int(question.marks or 0)
-        if is_correct
-        else 0
+            int(question.marks or 0)
+            if is_correct
+            else 0
         )
 
         answer_record = QuizAnswer(
@@ -6325,23 +11457,6 @@ def learner_submit_exam(
         )
 
         db.session.add(answer_record)
-
-    db.session.commit()
-    answer_record = QuizAnswer(
-
-            attempt_id=attempt.id,
-
-            question_id=question.id,
-
-            selected_answer=selected_answer,
-
-            is_correct=is_correct,
-
-            marks_awarded=marks_awarded
-
-        )
-
-    db.session.add(answer_record)
 
     db.session.commit()
 
@@ -6530,7 +11645,11 @@ def learner_exam_result(user, exam_id):
             "error": "Learner profile not found"
         }), 404
 
-    quiz = Quiz.query.get(
+    # --------------------------------------------------------
+    # Find exam
+    # --------------------------------------------------------
+
+    quiz = db.session.get(
         Quiz,
         exam_id
     )
@@ -6541,7 +11660,7 @@ def learner_exam_result(user, exam_id):
         }), 404
 
     # --------------------------------------------------------
-    # Make sure learner is enrolled in this exam's course
+    # SECURITY: learner must be enrolled
     # --------------------------------------------------------
 
     enrollment = Enrollment.query.filter_by(
@@ -6554,100 +11673,22 @@ def learner_exam_result(user, exam_id):
             "error": "You are not enrolled in this course"
         }), 403
 
-        # --------------------------------------------------------
-    # QUIZ ATTEMPT / SERVER-SIDE TIMER
+    # --------------------------------------------------------
+    # View Result must NEVER create a new attempt.
+    # Find the learner's latest existing attempt.
     # --------------------------------------------------------
 
-    max_attempts = int(quiz.max_attempts or 1)
-
-    # Find the learner's current unfinished attempt.
-    active_attempt = (
+    attempt = (
         QuizAttempt.query
         .filter_by(
             quiz_id=quiz.id,
-            learner_id=learner.id,
-            attempted_at=None
+            learner_id=learner.id
         )
-        .order_by(QuizAttempt.id.desc())
+        .order_by(
+            QuizAttempt.id.desc()
+        )
         .first()
     )
-
-    # Count all attempts, including an unfinished attempt.
-    attempt_count = QuizAttempt.query.filter_by(
-        quiz_id=quiz.id,
-        learner_id=learner.id
-    ).count()
-
-    # If there is no active attempt, this is a new attempt.
-    if not active_attempt:
-
-        if attempt_count >= max_attempts:
-            return jsonify({
-                "error": "Maximum quiz attempts reached",
-                "max_attempts": max_attempts,
-                "attempts_used": attempt_count
-            }), 403
-
-        active_attempt = QuizAttempt(
-            quiz_id=quiz.id,
-            learner_id=learner.id,
-            started_at=datetime.now(timezone.utc),
-            attempted_at=None,
-            score=0,
-            total=0
-        )
-
-        db.session.add(active_attempt)
-        db.session.commit()
-
-        attempt_count += 1
-
-    # --------------------------------------------------------
-    # SERVER-CONTROLLED EXPIRY
-    # --------------------------------------------------------
-
-    now = datetime.now(timezone.utc)
-
-    started_at = active_attempt.started_at
-
-    # Handle databases that return a naive datetime.
-    if started_at.tzinfo is None:
-        started_at = started_at.replace(
-            tzinfo=timezone.utc
-        )
-
-    expires_at = (
-        started_at +
-        timedelta(
-            minutes=int(
-                quiz.duration_minutes or 30
-            )
-        )
-    )
-
-    # If an unfinished attempt has already expired,
-    # do not allow the learner to continue it.
-    if now >= expires_at:
-        return jsonify({
-            "error": "Quiz time limit exceeded",
-            "duration_minutes": int(
-                quiz.duration_minutes or 30
-            ),
-            "started_at": started_at.isoformat(),
-            "expires_at": expires_at.isoformat(),
-            "attempt_id": active_attempt.id
-        }), 403
-
-    # --------------------------------------------------------
-    # Get the learner's latest attempt
-    # --------------------------------------------------------
-
-    attempt = QuizAttempt.query.filter_by(
-        quiz_id=quiz.id,
-        learner_id=learner.id
-    ).order_by(
-        QuizAttempt.id.desc()
-    ).first()
 
     if not attempt:
         return jsonify({
@@ -6671,11 +11712,16 @@ def learner_exam_result(user, exam_id):
     # Get all questions
     # --------------------------------------------------------
 
-    questions = Question.query.filter_by(
-        quiz_id=quiz.id
-    ).order_by(
-        Question.id.asc()
-    ).all()
+    questions = (
+        Question.query
+        .filter_by(
+            quiz_id=quiz.id
+        )
+        .order_by(
+            Question.id.asc()
+        )
+        .all()
+    )
 
     question_results = []
 
@@ -6722,14 +11768,16 @@ def learner_exam_result(user, exam_id):
             ),
 
             "marks_awarded": (
-                int(answer.marks_awarded or 0)
+                int(
+                    answer.marks_awarded or 0
+                )
                 if answer
                 else 0
             )
         })
 
     # --------------------------------------------------------
-    # Calculate percentage
+    # Calculate result statistics
     # --------------------------------------------------------
 
     percentage = (
@@ -6771,6 +11819,10 @@ def learner_exam_result(user, exam_id):
         for item in question_results
         if item["selected_answer"] is None
     )
+
+    # --------------------------------------------------------
+    # Return saved result
+    # --------------------------------------------------------
 
     return jsonify({
 
@@ -6815,6 +11867,7 @@ def learner_exam_result(user, exam_id):
         "questions": question_results
 
     }), 200
+
 
 # ============================================================
 # TRAINER — VIEW COMPLETE LEARNER EXAM RESULT
@@ -7806,6 +12859,11 @@ def admin_enrollments(user):
     result = []
 
     for enrollment in pagination.items:
+
+        # -------------------------------------------------
+        # Learner
+        # -------------------------------------------------
+
         learner = Learner.query.get(
             enrollment.learner_id
         )
@@ -7818,33 +12876,95 @@ def admin_enrollments(user):
             else None
         )
 
+        # -------------------------------------------------
+        # Course
+        # -------------------------------------------------
+
         course = Course.query.get(
             enrollment.course_id
         )
 
+        # -------------------------------------------------
+        # Payment summary
+        # -------------------------------------------------
+
+        paid_amount = (
+            db.session.query(
+                db.func.coalesce(
+                    db.func.sum(Payment.amount),
+                    0
+                )
+            )
+            .filter(
+                Payment.enrollment_id == enrollment.id,
+                Payment.status == "paid"
+            )
+            .scalar()
+            or 0
+        )
+
+        course_fee = float(
+            enrollment.course_fee
+            if enrollment.course_fee is not None
+            else (
+                course.course_fee
+                if course
+                else 0
+            )
+        )
+
+        paid_amount = float(
+            paid_amount
+        )
+
+        pending_amount = max(
+            course_fee - paid_amount,
+            0
+        )
+
         result.append({
             "id": enrollment.id,
-            "learner_id": enrollment.learner_id,
+
+            "learner_id":
+                enrollment.learner_id,
+
             "learner_name": (
-                user.name
-                if user
+                learner_user.name
+                if learner_user
                 else None
             ),
+
             "learner_email": (
-                user.email
-                if user
+                learner_user.email
+                if learner_user
                 else None
             ),
-            "course_id": enrollment.course_id,
+
+            "course_id":
+                enrollment.course_id,
+
             "course_title": (
                 course.title
                 if course
                 else None
             ),
+
+            "course_fee":
+                course_fee,
+
+            "paid_amount":
+                paid_amount,
+
+            "pending_amount":
+                pending_amount,
+
             "progress": int(
                 enrollment.progress or 0
             ),
-            "status": enrollment.status,
+
+            "status":
+                enrollment.status,
+
             "enrolled_at": (
                 enrollment.enrolled_at.isoformat()
                 if enrollment.enrolled_at
@@ -7854,47 +12974,49 @@ def admin_enrollments(user):
 
     return jsonify({
         "enrollments": result,
+
         "pagination": {
-            "page": pagination.page,
-            "limit": pagination.per_page,
-            "total": pagination.total,
-            "pages": pagination.pages,
-            "has_next": pagination.has_next,
-            "has_previous": pagination.has_prev,
+            "page":
+                pagination.page,
+
+            "limit":
+                pagination.per_page,
+
+            "total":
+                pagination.total,
+
+            "pages":
+                pagination.pages,
+
+            "has_next":
+                pagination.has_next,
+
+            "has_previous":
+                pagination.has_prev,
         },
     })
-
 
 @api.post("/admin/enrollments")
 @role_required("admin")
 def admin_create_enrollment(user):
     data = request.get_json(silent=True) or {}
 
-    learner_id = data.get(
-        "learner_id"
-    )
-
-    course_id = data.get(
-        "course_id"
-    )
+    learner_id = data.get("learner_id")
+    course_id = data.get("course_id")
 
     if not learner_id or not course_id:
         return jsonify({
             "error": "learner_id and course_id are required"
         }), 400
 
-    learner = Learner.query.get(
-        learner_id
-    )
+    learner = Learner.query.get(learner_id)
 
     if not learner:
         return jsonify({
             "error": "Learner not found"
         }), 404
 
-    course = Course.query.get(
-        course_id
-    )
+    course = Course.query.get(course_id)
 
     if not course:
         return jsonify({
@@ -7911,29 +13033,43 @@ def admin_create_enrollment(user):
             "error": "Learner is already enrolled in this course"
         }), 409
 
+    course_fee = float(
+        course.course_fee or 0
+    )
+
+    # Free courses can be activated immediately.
+    if course_fee <= 0:
+        enrollment_status = "active"
+    else:
+        # Paid courses require payment.
+        enrollment_status = "payment_pending"
+
     enrollment = Enrollment(
-        learner_id=learner_id,
-        course_id=course_id,
+        learner_id=learner.id,
+        course_id=course.id,
+        course_fee=course_fee,
         progress=0,
-        status="active"
+        status=enrollment_status
     )
 
     db.session.add(enrollment)
     db.session.commit()
 
     return jsonify({
-        "message": "Learner enrolled successfully",
+        "message": (
+            "Learner enrolled successfully"
+            if enrollment_status == "active"
+            else "Enrollment created. Payment is required."
+        ),
         "enrollment": {
             "id": enrollment.id,
             "learner_id": enrollment.learner_id,
             "course_id": enrollment.course_id,
+            "course_fee": course_fee,
             "progress": enrollment.progress,
             "status": enrollment.status,
-            "enrolled_at": (
-                enrollment.enrolled_at.isoformat()
-                if enrollment.enrolled_at
-                else None
-            )
+            "paid_amount": 0,
+            "pending_amount": course_fee
         }
     }), 201
 
@@ -7959,6 +13095,1840 @@ def admin_delete_enrollment(
     return jsonify({
         "message": "Enrollment deleted successfully"
     })
+
+# =========================================================
+# ADMIN — PAYMENTS
+# =========================================================
+
+@api.post("/admin/payments")
+@role_required("admin")
+def admin_create_payment(user):
+    data = request.get_json(silent=True) or {}
+
+    learner_id = data.get("learner_id")
+    enrollment_id = data.get("enrollment_id")
+    amount = data.get("amount")
+    payment_method = data.get("payment_method")
+    status = data.get("status", "paid")
+
+    # -----------------------------------------------------
+    # Validate required fields
+    # -----------------------------------------------------
+
+    if not learner_id:
+        return jsonify({
+            "error": "learner_id is required"
+        }), 400
+
+    if not enrollment_id:
+        return jsonify({
+            "error": "enrollment_id is required"
+        }), 400
+
+    if amount is None:
+        return jsonify({
+            "error": "amount is required"
+        }), 400
+
+    # -----------------------------------------------------
+    # Validate amount
+    # -----------------------------------------------------
+
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        return jsonify({
+            "error": "amount must be a valid number"
+        }), 400
+
+    if amount <= 0:
+        return jsonify({
+            "error": "Payment amount must be greater than 0"
+        }), 400
+
+    # -----------------------------------------------------
+    # Validate payment status
+    # -----------------------------------------------------
+
+    allowed_statuses = {
+        "paid",
+        "pending",
+        "failed"
+    }
+
+    status = str(status).lower()
+
+    if status not in allowed_statuses:
+        return jsonify({
+            "error": (
+                "Invalid payment status. "
+                "Use paid, pending, or failed."
+            )
+        }), 400
+
+    # -----------------------------------------------------
+    # Find learner
+    # -----------------------------------------------------
+
+    learner = Learner.query.get(learner_id)
+
+    if not learner:
+        return jsonify({
+            "error": "Learner not found"
+        }), 404
+
+    # -----------------------------------------------------
+    # Find enrollment
+    # -----------------------------------------------------
+
+    enrollment = Enrollment.query.get(enrollment_id)
+
+    if not enrollment:
+        return jsonify({
+            "error": "Enrollment not found"
+        }), 404
+
+    # -----------------------------------------------------
+    # Security: enrollment must belong to learner
+    # -----------------------------------------------------
+
+    if enrollment.learner_id != learner.id:
+        return jsonify({
+            "error": (
+                "Enrollment does not belong to "
+                "this learner"
+            )
+        }), 400
+
+    # -----------------------------------------------------
+    # Get course
+    # -----------------------------------------------------
+
+    course = Course.query.get(enrollment.course_id)
+
+    if not course:
+        return jsonify({
+            "error": "Course associated with enrollment not found"
+        }), 404
+
+    # -----------------------------------------------------
+    # Make sure enrollment has the course fee
+    # -----------------------------------------------------
+
+    if enrollment.course_fee is None:
+        enrollment.course_fee = course.course_fee or 0
+
+    course_fee = float(enrollment.course_fee or 0)
+
+    # -----------------------------------------------------
+    # Calculate already paid amount
+    # -----------------------------------------------------
+
+    paid_payments = Payment.query.filter_by(
+        enrollment_id=enrollment.id,
+        status="paid"
+    ).all()
+
+    already_paid = sum(
+        float(payment.amount or 0)
+        for payment in paid_payments
+    )
+
+    # -----------------------------------------------------
+    # Calculate pending amount before this payment
+    # -----------------------------------------------------
+
+    pending_before = max(
+        course_fee - already_paid,
+        0
+    )
+
+    # -----------------------------------------------------
+    # Only successful payments reduce the balance
+    # -----------------------------------------------------
+
+    if status == "paid":
+
+        if pending_before <= 0:
+            return jsonify({
+                "error": "This enrollment is already fully paid"
+            }), 400
+
+        if amount > pending_before:
+            return jsonify({
+                "error": "Payment amount exceeds pending balance",
+                "course_fee": course_fee,
+                "already_paid": already_paid,
+                "pending_amount": pending_before,
+                "maximum_payment": pending_before
+            }), 400
+
+    # -----------------------------------------------------
+    # Create payment
+    # -----------------------------------------------------
+
+    payment = Payment(
+        learner_id=learner.id,
+        enrollment_id=enrollment.id,
+        amount=amount,
+        payment_method=payment_method,
+        status=status
+    )
+
+    db.session.add(payment)
+
+    # -----------------------------------------------------
+    # Create invoice for the payment
+    # -----------------------------------------------------
+
+    invoice_number = (
+        f"INV-{datetime.now(timezone.utc):%Y%m%d%H%M%S}"
+        f"-{learner.id}-{enrollment.id}"
+    )
+
+    # Prevent an extremely unlikely duplicate invoice number
+    existing_invoice = Invoice.query.filter_by(
+        invoice_number=invoice_number
+    ).first()
+
+    if existing_invoice:
+        invoice_number = (
+            f"INV-{datetime.now(timezone.utc):%Y%m%d%H%M%S}"
+            f"-{learner.id}-{enrollment.id}-{uuid.uuid4().hex[:6].upper()}"
+        )
+
+    invoice_status = (
+        "paid"
+        if status == "paid"
+        else "unpaid"
+    )
+
+    invoice = Invoice(
+        learner_id=learner.id,
+        invoice_number=invoice_number,
+        amount=amount,
+        status=invoice_status
+    )
+
+    db.session.add(invoice)
+
+    # -----------------------------------------------------
+    # Calculate new balance
+    # -----------------------------------------------------
+
+    if status == "paid":
+        new_paid = already_paid + amount
+    else:
+        new_paid = already_paid
+
+    pending_after = max(
+        course_fee - new_paid,
+        0
+    )
+
+    # -----------------------------------------------------
+    # Activate enrollment after full payment
+    # -----------------------------------------------------
+
+    if (
+        status == "paid"
+        and course_fee > 0
+        and pending_after <= 0
+    ):
+        enrollment.status = "active"
+
+    db.session.commit()
+
+    # -----------------------------------------------------
+    # Response
+    # -----------------------------------------------------
+
+    return jsonify({
+        "message": "Payment recorded successfully",
+
+        "payment": {
+            "id": payment.id,
+            "learner_id": payment.learner_id,
+            "enrollment_id": payment.enrollment_id,
+            "amount": payment.amount,
+            "payment_method": payment.payment_method,
+            "status": payment.status,
+            "payment_date": (
+                payment.payment_date.isoformat()
+                if payment.payment_date
+                else None
+            )
+        },
+
+        "invoice": {
+            "id": invoice.id,
+            "invoice_number": invoice.invoice_number,
+            "amount": invoice.amount,
+            "status": invoice.status,
+            "invoice_date": (
+                invoice.invoice_date.isoformat()
+                if invoice.invoice_date
+                else None
+            )
+        },
+
+        "summary": {
+            "course_fee": course_fee,
+            "already_paid": already_paid,
+            "current_payment": (
+                amount
+                if status == "paid"
+                else 0
+            ),
+            "total_paid": new_paid,
+            "pending_amount": pending_after,
+            "enrollment_status": enrollment.status
+        }
+    }), 201
+
+@api.get("/admin/payments")
+@role_required("admin")
+def admin_get_payments(user):
+    page = request.args.get("page", 1, type=int)
+    limit = request.args.get("limit", 20, type=int)
+
+    page = max(page, 1)
+    limit = min(max(limit, 1), 100)
+
+    query = (
+        Payment.query
+        .order_by(Payment.payment_date.desc())
+    )
+
+    pagination = query.paginate(
+        page=page,
+        per_page=limit,
+        error_out=False
+    )
+    total_money_collected = float(
+        db.session.query(
+            db.func.coalesce(
+                db.func.sum(Payment.amount),
+                0
+            )
+        )
+        .filter(Payment.status == "paid")
+        .scalar()
+        or 0
+    )
+
+    payments = []
+
+    for payment in pagination.items:
+        learner = Learner.query.get(payment.learner_id)
+
+        enrollment = None
+        course = None
+
+        if payment.enrollment_id:
+            enrollment = Enrollment.query.get(payment.enrollment_id)
+
+            if enrollment:
+                course = Course.query.get(enrollment.course_id)
+
+        payments.append({
+            "id": payment.id,
+            "learner_id": payment.learner_id,
+            "learner_name": (
+                learner.user.name
+                if learner and learner.user
+                else None
+            ),
+            "learner_email": (
+                learner.user.email
+                if learner and learner.user
+                else None
+            ),
+            "enrollment_id": payment.enrollment_id,
+            "course_id": (
+                course.id
+                if course
+                else None
+            ),
+            "course_title": (
+                course.title
+                if course
+                else None
+            ),
+            "amount": float(payment.amount or 0),
+            "payment_method": payment.payment_method,
+            "status": payment.status,
+            "payment_date": (
+                payment.payment_date.isoformat()
+                if payment.payment_date
+                else None
+            )
+        })
+
+    return jsonify({
+        "payments": payments,
+        "total_money_collected": total_money_collected,
+        "pagination": {
+            "page": pagination.page,
+            "limit": pagination.per_page,
+            "pages": pagination.pages,
+            "total": pagination.total,
+            "has_next": pagination.has_next,
+            "has_previous": pagination.has_prev
+        }
+    }), 200
+
+
+@api.get("/admin/invoices")
+@role_required("admin")
+def admin_get_invoices(user):
+    page = request.args.get("page", 1, type=int)
+    limit = request.args.get("limit", 20, type=int)
+
+    page = max(page, 1)
+    limit = min(max(limit, 1), 100)
+
+    query = (
+        Invoice.query
+        .order_by(Invoice.invoice_date.desc())
+    )
+
+    pagination = query.paginate(
+        page=page,
+        per_page=limit,
+        error_out=False
+    )
+
+    invoices = []
+
+    for invoice in pagination.items:
+        learner = Learner.query.get(invoice.learner_id)
+
+        invoices.append({
+            "id": invoice.id,
+            "invoice_number": invoice.invoice_number,
+            "learner_id": invoice.learner_id,
+            "learner_name": (
+                learner.user.name
+                if learner and learner.user
+                else None
+            ),
+            "learner_email": (
+                learner.user.email
+                if learner and learner.user
+                else None
+            ),
+            "amount": float(invoice.amount or 0),
+            "invoice_date": (
+                invoice.invoice_date.isoformat()
+                if invoice.invoice_date
+                else None
+            ),
+            "status": invoice.status
+        })
+
+    return jsonify({
+        "invoices": invoices,
+        "pagination": {
+            "page": pagination.page,
+            "limit": pagination.per_page,
+            "pages": pagination.pages,
+            "total": pagination.total,
+            "has_next": pagination.has_next,
+            "has_previous": pagination.has_prev
+        }
+    }), 200
+
+# =========================================================
+# LEARNER - PAYMENT HISTORY
+# =========================================================
+
+@api.get("/learner/payments")
+@role_required("learner")
+def learner_get_payments(user):
+    learner = Learner.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not learner:
+        return jsonify({
+            "error": "Learner profile not found"
+        }), 404
+
+    page = request.args.get("page", 1, type=int)
+    limit = request.args.get("limit", 20, type=int)
+
+    page = max(page, 1)
+    limit = min(max(limit, 1), 100)
+
+    query = (
+        Payment.query
+        .filter_by(learner_id=learner.id)
+        .order_by(Payment.payment_date.desc())
+    )
+
+    pagination = query.paginate(
+        page=page,
+        per_page=limit,
+        error_out=False
+    )
+
+    payments = []
+
+    for payment in pagination.items:
+        enrollment = Enrollment.query.get(
+            payment.enrollment_id
+        )
+
+        course = (
+            Course.query.get(enrollment.course_id)
+            if enrollment
+            else None
+        )
+
+        payments.append({
+            "id": payment.id,
+            "enrollment_id": payment.enrollment_id,
+            "course_id": course.id if course else None,
+            "course_title": course.title if course else None,
+            "amount": float(payment.amount or 0),
+            "payment_method": payment.payment_method,
+            "status": payment.status,
+            "payment_date": (
+                payment.payment_date.isoformat()
+                if payment.payment_date
+                else None
+            ),
+        })
+
+    total_paid = float(
+        db.session.query(
+            db.func.coalesce(
+                db.func.sum(Payment.amount),
+                0
+            )
+        )
+        .filter_by(
+            learner_id=learner.id,
+            status="paid"
+        )
+        .scalar()
+        or 0
+    )
+
+    payment_count = Payment.query.filter_by(
+        learner_id=learner.id,
+        status="paid"
+    ).count()
+
+    return jsonify({
+        "payments": payments,
+        "summary": {
+            "total_paid": total_paid,
+            "payment_count": payment_count
+        },
+        "pagination": {
+            "page": pagination.page,
+            "limit": pagination.per_page,
+            "pages": pagination.pages,
+            "total": pagination.total,
+            "has_next": pagination.has_next,
+            "has_previous": pagination.has_prev
+        }
+    }), 200
+
+# =========================================================
+# LEARNER - CREATE PAYMENT (DISABLED)
+# =========================================================
+
+@api.post("/learner/payments")
+@role_required("learner")
+def learner_create_payment(user):
+    return jsonify({
+        "error": (
+            "Direct payment recording is disabled. "
+            "Please use Razorpay Checkout to complete payment."
+        ),
+        "code": "RAZORPAY_CHECKOUT_REQUIRED"
+    }), 410
+
+# =========================================================
+# LEARNER - RAZORPAY PAYMENT
+# =========================================================
+
+def get_razorpay_client():
+    """Create a Razorpay client using backend-only credentials."""
+
+    key_id = os.getenv("RAZORPAY_KEY_ID")
+    key_secret = os.getenv("RAZORPAY_KEY_SECRET")
+
+    if not key_id or not key_secret:
+        raise RuntimeError(
+            "Razorpay credentials are not configured."
+        )
+
+    return razorpay.Client(
+        auth=(key_id, key_secret)
+    )
+
+
+@api.post("/learner/payments/razorpay/order")
+@role_required("learner")
+def learner_create_razorpay_order(user):
+    data = request.get_json(silent=True) or {}
+    enrollment_id = data.get("enrollment_id")
+
+    if not enrollment_id:
+        return jsonify({
+            "error": "enrollment_id is required"
+        }), 400
+
+    try:
+        enrollment_id = int(enrollment_id)
+    except (TypeError, ValueError):
+        return jsonify({
+            "error": "Invalid enrollment_id"
+        }), 400
+
+    learner = Learner.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not learner:
+        return jsonify({
+            "error": "Learner profile not found"
+        }), 404
+
+    enrollment = Enrollment.query.filter_by(
+        id=enrollment_id,
+        learner_id=learner.id
+    ).first()
+
+    if not enrollment:
+        return jsonify({
+            "error": "Enrollment not found"
+        }), 404
+
+    course = Course.query.get(enrollment.course_id)
+
+    if not course:
+        return jsonify({
+            "error": "Course not found"
+        }), 404
+
+    course_fee = float(
+        enrollment.course_fee
+        if enrollment.course_fee is not None
+        else course.course_fee or 0
+    )
+
+    if course_fee <= 0:
+        return jsonify({
+            "error": "This course does not require payment"
+        }), 400
+
+    already_paid = float(
+        db.session.query(
+            db.func.coalesce(
+                db.func.sum(Payment.amount),
+                0
+            )
+        )
+        .filter(
+            Payment.enrollment_id == enrollment.id,
+            Payment.status == "paid"
+        )
+        .scalar()
+        or 0
+    )
+
+    pending_amount = round(
+        max(course_fee - already_paid, 0),
+        2
+    )
+
+    if pending_amount <= 0:
+        enrollment.status = "active"
+        db.session.commit()
+
+        return jsonify({
+            "error": "This course is already fully paid"
+        }), 400
+
+        # Reuse an existing pending Razorpay order for this enrollment.
+    existing_payment = Payment.query.filter(
+        Payment.enrollment_id == enrollment.id,
+        Payment.learner_id == learner.id,
+        Payment.payment_method == "razorpay",
+        Payment.status == "pending",
+        Payment.razorpay_order_id.isnot(None),
+    ).order_by(Payment.id.desc()).first()
+
+    if existing_payment:
+        try:
+            client = get_razorpay_client()
+            existing_order = client.order.fetch(
+                existing_payment.razorpay_order_id
+            )
+
+            if (
+                existing_order.get("status") == "created"
+                and int(existing_order.get("amount", -1))
+                == int(round(float(existing_payment.amount) * 100))
+                and existing_order.get("currency") == "INR"
+            ):
+                return jsonify({
+                    "message": "Existing Razorpay order reused",
+                    "key_id": os.getenv("RAZORPAY_KEY_ID"),
+                    "order_id": existing_order["id"],
+                    "amount": existing_order["amount"],
+                    "currency": existing_order["currency"],
+                    "payment_id": existing_payment.id,
+                    "course_name": course.title,
+                }), 200
+
+        except Exception:
+            current_app.logger.exception(
+                "Unable to check existing Razorpay order"
+            )
+
+            return jsonify({
+                "error": (
+                    "Unable to check the existing payment order. "
+                    "Please try again."
+                )
+            }), 502
+
+    # Create the Razorpay order for the server-calculated balance.
+    try:
+        client = get_razorpay_client()
+
+        order = client.order.create({
+            "amount": int(round(pending_amount * 100)),
+            "currency": "INR",
+            "receipt": f"enr_{enrollment.id}_{uuid.uuid4().hex[:12]}",
+            "notes": {
+                "learner_id": str(learner.id),
+                "enrollment_id": str(enrollment.id),
+                "course_id": str(course.id),
+            },
+        })
+
+    except Exception:
+        current_app.logger.exception(
+            "Unable to create Razorpay order"
+        )
+
+        return jsonify({
+            "error": "Unable to create payment order. Please try again."
+        }), 502
+
+    # Save the order as pending before opening Checkout.
+    payment = Payment(
+        learner_id=learner.id,
+        enrollment_id=enrollment.id,
+        amount=pending_amount,
+        payment_method="razorpay",
+        status="pending",
+        razorpay_order_id=order["id"],
+    )
+
+    try:
+        db.session.add(payment)
+        db.session.commit()
+
+    except Exception:
+        db.session.rollback()
+
+        current_app.logger.exception(
+            "Unable to save Razorpay order"
+        )
+
+        return jsonify({
+            "error": "Unable to save payment order"
+        }), 500
+
+    return jsonify({
+        "message": "Razorpay order created",
+        "key_id": os.getenv("RAZORPAY_KEY_ID"),
+        "order_id": order["id"],
+        "amount": order["amount"],
+        "currency": order["currency"],
+        "payment_id": payment.id,
+        "course_name": course.title,
+    }), 201
+
+
+@api.post("/learner/payments/razorpay/verify")
+@role_required("learner")
+def learner_verify_razorpay_payment(user):
+    data = request.get_json(silent=True) or {}
+
+    order_id = data.get("razorpay_order_id")
+    payment_id = data.get("razorpay_payment_id")
+    signature = data.get("razorpay_signature")
+
+    if not all([order_id, payment_id, signature]):
+        return jsonify({
+            "error": (
+                "razorpay_order_id, razorpay_payment_id, "
+                "and razorpay_signature are required"
+            )
+        }), 400
+
+    learner = Learner.query.filter_by(
+        user_id=user.id
+    ).first()
+
+    if not learner:
+        return jsonify({
+            "error": "Learner profile not found"
+        }), 404
+
+    payment = Payment.query.filter_by(
+        learner_id=learner.id,
+        razorpay_order_id=order_id
+    ).first()
+
+    if not payment:
+        return jsonify({
+            "error": "Payment order not found"
+        }), 404
+
+    # Idempotency: repeated verification of the same payment
+    # must not create another payment or invoice.
+    if payment.status == "paid":
+        if payment.razorpay_payment_id == payment_id:
+            enrollment = Enrollment.query.get(
+                payment.enrollment_id
+            )
+
+            return jsonify({
+                "message": "Payment already verified",
+                "status": "paid",
+                "enrollment_status": (
+                    enrollment.status if enrollment else None
+                ),
+            }), 200
+
+        return jsonify({
+            "error": "This order has already been paid"
+        }), 409
+
+    try:
+        client = get_razorpay_client()
+
+        # Verify Razorpay's HMAC-SHA256 checkout signature.
+        key_secret = os.getenv("RAZORPAY_KEY_SECRET")
+
+        expected_signature = hmac.new(
+            key_secret.encode("utf-8"),
+            f"{order_id}|{payment_id}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
+        if not hmac.compare_digest(
+            expected_signature,
+            str(signature),
+        ):
+            return jsonify({
+                "error": "Invalid payment signature"
+            }), 400
+        # Verify the order details directly with Razorpay.
+        gateway_order = client.order.fetch(order_id)
+
+        expected_amount = int(
+            round(float(payment.amount) * 100)
+        )
+
+        if int(gateway_order.get("amount", -1)) != expected_amount:
+            return jsonify({
+                "error": "Razorpay order amount does not match"
+            }), 400
+
+        if gateway_order.get("currency") != "INR":
+            return jsonify({
+                "error": "Razorpay order currency does not match"
+            }), 400
+        
+        # Fetch payment details from Razorpay itself.
+        gateway_payment = client.payment.fetch(payment_id)
+
+        if gateway_payment.get("order_id") != order_id:
+            return jsonify({
+                "error": "Payment does not match this order"
+            }), 400
+
+        if gateway_payment.get("status") != "captured":
+            return jsonify({
+                "error": (
+                    "Payment has not been captured yet. "
+                    "Please wait and try again."
+                )
+            }), 409
+
+        expected_amount = int(round(float(payment.amount) * 100))
+
+        if int(gateway_payment.get("amount", -1)) != expected_amount:
+            return jsonify({
+                "error": "Payment amount does not match the order"
+            }), 400
+
+        if gateway_payment.get("currency") != "INR":
+            return jsonify({
+                "error": "Unexpected payment currency"
+            }), 400
+
+        if gateway_payment.get("id") != payment_id:
+            return jsonify({
+                "error": "Payment identifier mismatch"
+            }), 400
+
+    except Exception:
+        current_app.logger.exception(
+            "Razorpay payment verification failed"
+        )
+
+        return jsonify({
+            "error": (
+                "Unable to verify payment with Razorpay. "
+                "Please retry verification."
+            )
+        }), 502
+
+    enrollment = Enrollment.query.filter_by(
+        id=payment.enrollment_id,
+        learner_id=learner.id
+    ).first()
+
+    if not enrollment:
+        return jsonify({
+            "error": "Enrollment not found"
+        }), 404
+
+    course = Course.query.get(enrollment.course_id)
+
+    if not course:
+        return jsonify({
+            "error": "Course not found"
+        }), 404
+
+    # Prevent the same Razorpay transaction being reused.
+    duplicate_payment = Payment.query.filter(
+        Payment.razorpay_payment_id == payment_id,
+        Payment.id != payment.id
+    ).first()
+
+    if duplicate_payment:
+        return jsonify({
+            "error": "This Razorpay payment has already been processed"
+        }), 409
+
+    # Record the verified payment.
+    payment.razorpay_payment_id = payment_id
+    payment.payment_method = "razorpay"
+    payment.status = "paid"
+    payment.payment_date = datetime.now(timezone.utc)
+
+    # Create an invoice only after successful verification.
+    invoice_number = (
+        f"INV-{datetime.now(timezone.utc):%Y%m%d%H%M%S}"
+        f"-{learner.id}-{enrollment.id}-{uuid.uuid4().hex[:6].upper()}"
+    )
+
+    invoice = Invoice(
+        learner_id=learner.id,
+        invoice_number=invoice_number,
+        amount=float(payment.amount),
+        status="paid",
+    )
+
+    db.session.add(invoice)
+
+    # Calculate the total paid amount, including this payment.
+    new_paid = float(
+        db.session.query(
+            db.func.coalesce(
+                db.func.sum(Payment.amount),
+                0
+            )
+        )
+        .filter(
+            Payment.enrollment_id == enrollment.id,
+            Payment.status == "paid",
+        )
+        .scalar()
+        or 0
+    )
+
+    course_fee = float(
+        enrollment.course_fee
+        if enrollment.course_fee is not None
+        else course.course_fee or 0
+    )
+
+    pending_after = max(
+        round(course_fee - new_paid, 2),
+        0
+    )
+
+    if pending_after <= 0:
+        enrollment.status = "active"
+    else:
+        enrollment.status = "payment_pending"
+
+    try:
+        db.session.commit()
+
+    except Exception:
+        db.session.rollback()
+
+        current_app.logger.exception(
+            "Unable to save verified Razorpay payment"
+        )
+
+        return jsonify({
+            "error": (
+                "Payment was verified, but saving the result failed. "
+                "Please retry verification or contact support."
+            )
+        }), 500
+
+    return jsonify({
+        "message": "Payment verified successfully",
+        "payment": {
+            "id": payment.id,
+            "razorpay_order_id": payment.razorpay_order_id,
+            "razorpay_payment_id": payment.razorpay_payment_id,
+            "amount": float(payment.amount),
+            "status": payment.status,
+        },
+        "invoice": {
+            "id": invoice.id,
+            "invoice_number": invoice.invoice_number,
+            "amount": float(invoice.amount),
+            "status": invoice.status,
+        },
+        "summary": {
+            "course_fee": course_fee,
+            "total_paid": new_paid,
+            "pending_amount": pending_after,
+            "enrollment_status": enrollment.status,
+            "access_granted": enrollment.status == "active",
+        },
+    }), 200
+
+@api.get("/learner/invoices")
+@role_required("learner")
+def learner_get_invoices(user):
+    learner = Learner.query.filter_by(user_id=user.id).first()
+
+    if not learner:
+        return jsonify({"message": "Learner profile not found"}), 404
+
+    page = request.args.get("page", 1, type=int)
+    limit = request.args.get("limit", 20, type=int)
+
+    page = max(page, 1)
+    limit = min(max(limit, 1), 100)
+
+    query = (
+        Invoice.query
+        .filter_by(learner_id=learner.id)
+        .order_by(Invoice.invoice_date.desc())
+    )
+
+    pagination = query.paginate(
+        page=page,
+        per_page=limit,
+        error_out=False
+    )
+
+    invoices = []
+
+    for invoice in pagination.items:
+        invoices.append({
+            "id": invoice.id,
+            "invoice_number": invoice.invoice_number,
+            "amount": float(invoice.amount or 0),
+            "invoice_date": (
+                invoice.invoice_date.isoformat()
+                if invoice.invoice_date
+                else None
+            ),
+            "status": invoice.status
+        })
+
+    return jsonify({
+        "invoices": invoices,
+        "pagination": {
+            "page": pagination.page,
+            "limit": pagination.per_page,
+            "pages": pagination.pages,
+            "total": pagination.total,
+            "has_next": pagination.has_next,
+            "has_previous": pagination.has_prev
+        }
+    }), 200
+
+@api.get("/learner/invoices/<int:invoice_id>/pdf")
+@role_required("learner")
+def learner_download_invoice_pdf(user, invoice_id):
+    learner = Learner.query.filter_by(user_id=user.id).first()
+
+    if not learner:
+        return jsonify({
+            "message": "Learner profile not found"
+        }), 404
+
+    invoice = Invoice.query.filter_by(
+        id=invoice_id,
+        learner_id=learner.id
+    ).first()
+
+    if not invoice:
+        return jsonify({
+            "message": "Invoice not found"
+        }), 404
+
+    try:
+        from io import BytesIO
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.lib.enums import TA_CENTER
+        from reportlab.platypus import (
+            SimpleDocTemplate,
+            Paragraph,
+            Spacer,
+            Table,
+            TableStyle
+        )
+        from reportlab.lib import colors
+
+        buffer = BytesIO()
+
+        font_path = "/System/Library/Fonts/NotoSansKannada.ttc"
+
+        pdfmetrics.registerFont(
+            TTFont(
+                "RupeeFont",
+                font_path,
+                subfontIndex=0
+            )
+        )
+
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=A4,
+            rightMargin=40,
+            leftMargin=40,
+            topMargin=40,
+            bottomMargin=40
+        )
+
+        styles = getSampleStyleSheet()
+
+        title_style = styles["Title"]
+        title_style.alignment = TA_CENTER
+
+        story = []
+
+        story.append(
+            Paragraph("DEVSPRINT LMS", title_style)
+        )
+
+        story.append(
+            Paragraph("INVOICE", styles["Heading2"])
+        )
+
+        story.append(Spacer(1, 20))
+
+        learner_name = (
+            learner.user.name
+            if learner.user
+            else "Learner"
+        )
+
+        learner_email = (
+            learner.user.email
+            if learner.user
+            else ""
+        )
+
+        invoice_date = (
+            invoice.invoice_date.strftime("%d %B %Y")
+            if invoice.invoice_date
+            else ""
+        )
+
+        invoice_details = [
+            ["Invoice Number", invoice.invoice_number],
+            ["Invoice Date", invoice_date],
+            ["Learner", learner_name],
+            ["Email", learner_email],
+            [
+                "Amount",
+                Paragraph(
+                    f'<font name="RupeeFont">₹</font>'
+                    f'{float(invoice.amount or 0):,.2f}',
+                    styles["Normal"]
+                )
+            ],
+            ["Status", str(invoice.status).upper()],
+        ]
+
+        table = Table(
+            invoice_details,
+            colWidths=[150, 330]
+        )
+
+        table.setStyle(
+            TableStyle([
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("BACKGROUND", (0, 0), (0, -1), colors.lightgrey),
+                ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),                
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("PADDING", (0, 0), (-1, -1), 8),
+            ])
+        )
+
+        story.append(table)
+
+        story.append(Spacer(1, 30))
+
+        story.append(
+            Paragraph(
+                "Thank you for using DevSprint LMS.",
+                styles["Normal"]
+            )
+        )
+
+        doc.build(story)
+
+        buffer.seek(0)
+
+        from flask import send_file
+
+        return send_file(
+            buffer,
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=f"{invoice.invoice_number}.pdf"
+        )
+
+    except ImportError:
+        return jsonify({
+            "message": "PDF generation is not available. "
+                       "Please install reportlab."
+        }), 500
+
+    except Exception:
+        return jsonify({
+            "message": "Failed to generate invoice PDF"
+        }), 500
+
+# ============================================================
+# ADMIN — INVOICE PDF
+# ============================================================
+
+@api.get("/admin/invoices/<int:invoice_id>/pdf")
+@role_required("admin")
+def admin_download_invoice_pdf(user, invoice_id):
+
+    invoice = Invoice.query.get(invoice_id)
+
+    if not invoice:
+        return jsonify({
+            "message": "Invoice not found"
+        }), 404
+
+    learner = Learner.query.get(invoice.learner_id)
+
+    if not learner:
+        return jsonify({
+            "message": "Learner not found"
+        }), 404
+
+    try:
+        from io import BytesIO
+
+        from reportlab.lib.pagesizes import A4
+
+        from reportlab.lib.styles import (
+            getSampleStyleSheet
+        )
+
+        from reportlab.lib.enums import TA_CENTER
+
+        from reportlab.platypus import (
+            SimpleDocTemplate,
+            Paragraph,
+            Spacer,
+            Table,
+            TableStyle
+        )
+
+        from reportlab.lib import colors
+
+        buffer = BytesIO()
+
+        # ----------------------------------------------------
+        # RUPEE FONT
+        # ----------------------------------------------------
+
+        font_path = (
+            "/System/Library/Fonts/"
+            "NotoSansKannada.ttc"
+        )
+
+        pdfmetrics.registerFont(
+            TTFont(
+                "RupeeFont",
+                font_path,
+                subfontIndex=0
+            )
+        )
+
+        # ----------------------------------------------------
+        # PDF DOCUMENT
+        # ----------------------------------------------------
+
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=A4,
+            rightMargin=40,
+            leftMargin=40,
+            topMargin=40,
+            bottomMargin=40
+        )
+
+        styles = getSampleStyleSheet()
+
+        title_style = styles["Title"]
+
+        title_style.alignment = TA_CENTER
+
+        story = []
+
+        # ----------------------------------------------------
+        # TITLE
+        # ----------------------------------------------------
+
+        story.append(
+            Paragraph(
+                "DEVSPRINT LMS",
+                title_style
+            )
+        )
+
+        story.append(
+            Paragraph(
+                "INVOICE",
+                styles["Heading2"]
+            )
+        )
+
+        story.append(
+            Spacer(1, 20)
+        )
+
+        # ----------------------------------------------------
+        # LEARNER DETAILS
+        # ----------------------------------------------------
+
+        learner_name = (
+            learner.user.name
+            if learner.user
+            else "Learner"
+        )
+
+        learner_email = (
+            learner.user.email
+            if learner.user
+            else ""
+        )
+
+        # ----------------------------------------------------
+        # INVOICE DATE
+        # ----------------------------------------------------
+
+        invoice_date = (
+            invoice.invoice_date.strftime(
+                "%d %B %Y"
+            )
+            if invoice.invoice_date
+            else ""
+        )
+
+        # ----------------------------------------------------
+        # INVOICE DETAILS
+        # ----------------------------------------------------
+
+        invoice_details = [
+
+            [
+                "Invoice Number",
+                invoice.invoice_number
+            ],
+
+            [
+                "Invoice Date",
+                invoice_date
+            ],
+
+            [
+                "Learner",
+                learner_name
+            ],
+
+            [
+                "Email",
+                learner_email
+            ],
+
+            [
+                "Amount",
+                Paragraph(
+                    f'<font name="RupeeFont">₹</font>'
+                    f'{float(invoice.amount or 0):,.2f}',
+                    styles["Normal"]
+                )
+            ],
+
+            [
+                "Status",
+                str(
+                    invoice.status
+                ).upper()
+            ],
+
+        ]
+
+        # ----------------------------------------------------
+        # TABLE
+        # ----------------------------------------------------
+
+        table = Table(
+            invoice_details,
+            colWidths=[
+                150,
+                330
+            ]
+        )
+
+        table.setStyle(
+            TableStyle([
+
+                (
+                    "GRID",
+                    (0, 0),
+                    (-1, -1),
+                    0.5,
+                    colors.grey
+                ),
+
+                (
+                    "BACKGROUND",
+                    (0, 0),
+                    (0, -1),
+                    colors.lightgrey
+                ),
+
+                (
+                    "FONTNAME",
+                    (0, 0),
+                    (-1, -1),
+                    "Helvetica"
+                ),
+
+                (
+                    "VALIGN",
+                    (0, 0),
+                    (-1, -1),
+                    "TOP"
+                ),
+
+                (
+                    "PADDING",
+                    (0, 0),
+                    (-1, -1),
+                    8
+                ),
+
+            ])
+        )
+
+        story.append(table)
+
+        story.append(
+            Spacer(1, 30)
+        )
+
+        # ----------------------------------------------------
+        # FOOTER MESSAGE
+        # ----------------------------------------------------
+
+        story.append(
+            Paragraph(
+                "Thank you for using DevSprint LMS.",
+                styles["Normal"]
+            )
+        )
+
+        # ----------------------------------------------------
+        # BUILD PDF
+        # ----------------------------------------------------
+
+        doc.build(story)
+
+        buffer.seek(0)
+
+        from flask import send_file
+
+        return send_file(
+            buffer,
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=(
+                f"{invoice.invoice_number}.pdf"
+            )
+        )
+
+    except ImportError:
+
+        return jsonify({
+            "message":
+                "PDF generation is not available. "
+                "Please install reportlab."
+        }), 500
+
+    except Exception:
+
+        return jsonify({
+            "message":
+                "Failed to generate invoice PDF"
+        }), 500
+
+# ============================================================
+# ADMIN — ATTENDANCE
+# ============================================================
+
+@api.get("/admin/attendance")
+@role_required("admin")
+def admin_attendance(user):
+    try:
+        page = max(
+            int(request.args.get("page", 1)),
+            1,
+        )
+    except (TypeError, ValueError):
+        page = 1
+
+    try:
+        limit = min(
+            max(
+                int(request.args.get("limit", 20)),
+                1,
+            ),
+            100,
+        )
+    except (TypeError, ValueError):
+        limit = 20
+
+    batch_id = request.args.get("batch_id")
+    date_value = request.args.get("date")
+    learner_id = request.args.get("learner_id")
+
+    query = Attendance.query
+
+    if batch_id:
+        try:
+            batch_id = int(batch_id)
+        except (TypeError, ValueError):
+            return jsonify({
+                "error": "batch_id must be an integer"
+            }), 400
+
+        query = query.filter(
+            Attendance.batch_id == batch_id
+        )
+
+    if learner_id:
+        try:
+            learner_id = int(learner_id)
+        except (TypeError, ValueError):
+            return jsonify({
+                "error": "learner_id must be an integer"
+            }), 400
+
+        query = query.filter(
+            Attendance.learner_id == learner_id
+        )
+
+    if date_value:
+        try:
+            attendance_date = datetime.strptime(
+                date_value,
+                "%Y-%m-%d",
+            ).date()
+        except (TypeError, ValueError):
+            return jsonify({
+                "error": "Date must use YYYY-MM-DD format"
+            }), 400
+
+        query = query.filter(
+            Attendance.date == attendance_date
+        )
+
+    pagination = (
+        query
+        .order_by(
+            Attendance.date.desc(),
+            Attendance.id.desc(),
+        )
+        .paginate(
+            page=page,
+            per_page=limit,
+            error_out=False,
+        )
+    )
+
+    result = []
+
+    for record in pagination.items:
+        learner = db.session.get(
+            Learner,
+            record.learner_id,
+        )
+
+        batch = db.session.get(
+            Batch,
+            record.batch_id,
+        )
+
+        learner_user = (
+            db.session.get(
+                User,
+                learner.user_id,
+            )
+            if learner
+            else None
+        )
+
+        trainer = (
+            db.session.get(
+                Trainer,
+                batch.trainer_id,
+            )
+            if batch and batch.trainer_id
+            else None
+        )
+
+        trainer_user = (
+            db.session.get(
+                User,
+                trainer.user_id,
+            )
+            if trainer
+            else None
+        )
+
+        result.append({
+            "id": record.id,
+            "learner_id": record.learner_id,
+            "learner_name": (
+                learner_user.name
+                if learner_user
+                else None
+            ),
+            "learner_email": (
+                learner_user.email
+                if learner_user
+                else None
+            ),
+            "batch_id": record.batch_id,
+            "batch_name": (
+                batch.name
+                if batch
+                else None
+            ),
+            "trainer_id": (
+                trainer.id
+                if trainer
+                else None
+            ),
+            "trainer_name": (
+                trainer_user.name
+                if trainer_user
+                else None
+            ),
+            "date": (
+                record.date.isoformat()
+                if record.date
+                else None
+            ),
+            "status": record.status,
+            "marked_by": record.marked_by,
+        })
+
+    return jsonify({
+        "attendance": result,
+        "pagination": {
+            "page": pagination.page,
+            "limit": pagination.per_page,
+            "total": pagination.total,
+            "pages": pagination.pages,
+            "has_next": pagination.has_next,
+            "has_previous": pagination.has_prev,
+        },
+    }), 200
+
+
+@api.get("/admin/attendance/summary")
+@role_required("admin")
+def admin_attendance_summary(user):
+    batch_id = request.args.get("batch_id")
+
+    query = Learner.query
+
+    if batch_id:
+        try:
+            batch_id = int(batch_id)
+        except (TypeError, ValueError):
+            return jsonify({
+                "error": "batch_id must be an integer"
+            }), 400
+
+        query = query.filter(
+            Learner.batch_id == batch_id
+        )
+
+    learners = (
+        query
+        .filter(
+            Learner.batch_id.isnot(None)
+        )
+        .order_by(Learner.id.asc())
+        .all()
+    )
+
+    result = []
+
+    for learner in learners:
+        records = Attendance.query.filter_by(
+            learner_id=learner.id,
+            batch_id=learner.batch_id,
+        ).all()
+
+        total = len(records)
+
+        present = sum(
+            1
+            for record in records
+            if record.status == "present"
+        )
+
+        late = sum(
+            1
+            for record in records
+            if record.status == "late"
+        )
+
+        absent = sum(
+            1
+            for record in records
+            if record.status == "absent"
+        )
+
+        attended = present + late
+
+        percentage = (
+            round(
+                (attended / total) * 100,
+                2,
+            )
+            if total
+            else 0
+        )
+
+        result.append({
+            "learner_id": learner.id,
+            "learner_name": (
+                learner.user.name
+                if learner.user
+                else None
+            ),
+            "batch_id": learner.batch_id,
+            "total": total,
+            "present": present,
+            "late": late,
+            "absent": absent,
+            "attendance_percentage": percentage,
+        })
+
+    return jsonify({
+        "learners": result,
+        "total": len(result),
+    }), 200
+
+
+@api.put("/admin/attendance/<int:attendance_id>")
+@role_required("admin")
+def admin_update_attendance(
+    user,
+    attendance_id,
+):
+    record = db.session.get(
+        Attendance,
+        attendance_id,
+    )
+
+    if not record:
+        return jsonify({
+            "error": "Attendance record not found"
+        }), 404
+
+    data = request.get_json(
+        silent=True
+    ) or {}
+
+    status = str(
+        data.get("status", "")
+    ).strip().lower()
+
+    if status not in {
+        "present",
+        "absent",
+        "late",
+    }:
+        return jsonify({
+            "error": (
+                "Status must be present, absent, or late"
+            )
+        }), 400
+
+    record.status = status
+    record.marked_by = user.id
+
+    db.session.commit()
+
+    return jsonify({
+        "message": "Attendance updated successfully",
+        "attendance": {
+            "id": record.id,
+            "learner_id": record.learner_id,
+            "batch_id": record.batch_id,
+            "date": (
+                record.date.isoformat()
+                if record.date
+                else None
+            ),
+            "status": record.status,
+            "marked_by": record.marked_by,
+        },
+    }), 200
+
+
 
 
 # ============================================================
@@ -8086,6 +15056,136 @@ def admin_certificates(user):
 # ============================================================
 # ADMIN — BATCHES
 # ============================================================
+@api.post("/admin/batches")
+@role_required("admin")
+def admin_create_batch(user):
+    data = request.get_json(silent=True) or {}
+
+    name = str(data.get("name", "")).strip()
+    course_id = str(data.get("course_id", "")).strip()
+    start_date = data.get("start_date")
+    end_date = data.get("end_date")
+    trainer_id = data.get("trainer_id")
+    status = str(
+        data.get("status", "active")
+    ).strip().lower()
+
+    if not name:
+        return jsonify({
+            "error": "Batch name is required"
+        }), 400
+
+    if not course_id:
+        return jsonify({
+            "error": "Course is required"
+        }), 400
+
+    if not trainer_id:
+        return jsonify({
+            "error": "Trainer is required"
+        }), 400
+
+    course = db.session.get(
+        Course,
+        course_id
+    )
+
+    if not course:
+        return jsonify({
+            "error": "Course not found"
+        }), 404
+
+    trainer = db.session.get(
+        Trainer,
+        trainer_id
+    )
+
+    if not trainer:
+        return jsonify({
+            "error": "Trainer not found"
+        }), 404
+
+    if not start_date:
+        return jsonify({
+            "error": "Start date is required"
+        }), 400
+
+    if not end_date:
+        return jsonify({
+            "error": "End date is required"
+        }), 400
+
+    try:
+        parsed_start_date = datetime.strptime(
+            str(start_date),
+            "%Y-%m-%d"
+        ).date()
+
+        parsed_end_date = datetime.strptime(
+            str(end_date),
+            "%Y-%m-%d"
+        ).date()
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return jsonify({
+            "error": "Dates must use YYYY-MM-DD format"
+        }), 400
+
+    if parsed_end_date < parsed_start_date:
+        return jsonify({
+            "error": "End date cannot be before start date"
+        }), 400
+
+    if status not in {
+        "active",
+        "inactive",
+    }:
+        return jsonify({
+            "error": "Status must be active or inactive"
+        }), 400
+
+    batch = Batch(
+        name=name,
+        course_id=course.id,
+        trainer_id=trainer.id,
+        start_date=parsed_start_date,
+        end_date=parsed_end_date,
+        status=status,
+    )
+
+    db.session.add(batch)
+    db.session.commit()
+
+    return jsonify({
+        "message": "Batch created successfully",
+        "batch": {
+            "id": batch.id,
+            "name": batch.name,
+            "course_id": batch.course_id,
+            "course_title": course.title,
+            "trainer_id": batch.trainer_id,
+            "trainer_name": (
+                trainer.user.name
+                if trainer.user
+                else None
+            ),
+            "start_date": (
+                batch.start_date.isoformat()
+                if batch.start_date
+                else None
+            ),
+            "end_date": (
+                batch.end_date.isoformat()
+                if batch.end_date
+                else None
+            ),
+            "status": batch.status,
+        },
+    }), 201
+
 
 @api.get("/admin/batches")
 @role_required("admin")
@@ -8111,9 +15211,7 @@ def admin_batches(user):
 
     pagination = (
         Batch.query
-        .order_by(
-            Batch.id.desc()
-        )
+        .order_by(Batch.id.desc())
         .paginate(
             page=page,
             per_page=limit,
@@ -8124,27 +15222,56 @@ def admin_batches(user):
     result = []
 
     for batch in pagination.items:
+        course = (
+            db.session.get(
+                Course,
+                batch.course_id
+            )
+            if batch.course_id
+            else None
+        )
+
+        trainer = (
+            db.session.get(
+                Trainer,
+                batch.trainer_id
+            )
+            if batch.trainer_id
+            else None
+        )
+
+        learner_count = Learner.query.filter_by(
+            batch_id=batch.id
+        ).count()
+
+        trainer_name = None
+
+        if trainer and trainer.user:
+            trainer_name = trainer.user.name
+
         result.append({
             "id": batch.id,
-            "name": getattr(
-                batch,
-                "name",
-                None,
-            ),
-            "status": getattr(
-                batch,
-                "status",
-                None,
-            ),
-            "created_at": (
-                batch.created_at.isoformat()
-                if getattr(
-                    batch,
-                    "created_at",
-                    None,
-                )
+            "name": batch.name,
+            "course_id": batch.course_id,
+            "course_title": (
+                course.title
+                if course
                 else None
             ),
+            "trainer_id": batch.trainer_id,
+            "trainer_name": trainer_name,
+            "start_date": (
+                batch.start_date.isoformat()
+                if batch.start_date
+                else None
+            ),
+            "end_date": (
+                batch.end_date.isoformat()
+                if batch.end_date
+                else None
+            ),
+            "status": batch.status,
+            "learner_count": learner_count,
         })
 
     return jsonify({
@@ -8157,56 +15284,137 @@ def admin_batches(user):
             "has_next": pagination.has_next,
             "has_previous": pagination.has_prev,
         },
-    })
+    }), 200
 
 
-@api.post("/admin/batches")
+
+@api.get("/admin/batches/<int:batch_id>/learners")
 @role_required("admin")
-def admin_create_batch(user):
-    data = request.get_json(silent=True) or {}
+def admin_batch_learners(user, batch_id):
+    batch = db.session.get(Batch, batch_id)
 
-    name = str(
-        data.get("name", "")
-    ).strip()
-
-    if not name:
+    if not batch:
         return jsonify({
-            "error": "Batch name is required"
-        }), 400
+            "error": "Batch not found"
+        }), 404
 
-    batch_data = {
-        "name": name
-    }
-
-    if hasattr(Batch, "status"):
-        batch_data["status"] = data.get(
-            "status",
-            "active"
-        )
-
-    batch = Batch(
-        **batch_data
+    learners = (
+        Learner.query
+        .filter_by(batch_id=batch.id)
+        .order_by(Learner.id.asc())
+        .all()
     )
 
-    db.session.add(batch)
+    return jsonify({
+        "batch": {
+            "id": batch.id,
+            "name": batch.name,
+            "course_id": batch.course_id,
+        },
+        "learners": [
+            {
+                "id": learner.id,
+                "name": (
+                    learner.user.name
+                    if learner.user
+                    else None
+                ),
+                "email": (
+                    learner.user.email
+                    if learner.user
+                    else None
+                ),
+                "mobile": (
+                    learner.user.mobile
+                    if learner.user
+                    else None
+                ),
+                "education": learner.education,
+                "batch_id": learner.batch_id,
+                "status": learner.status,
+            }
+            for learner in learners
+        ],
+        "total": len(learners),
+    }), 200
+
+
+@api.post("/admin/batches/<int:batch_id>/learners")
+@role_required("admin")
+def admin_add_batch_learner(user, batch_id):
+    batch = db.session.get(Batch, batch_id)
+
+    if not batch:
+        return jsonify({
+            "error": "Batch not found"
+        }), 404
+
+    if not batch.course_id:
+        return jsonify({
+            "error": "This batch is not linked to a course"
+        }), 400
+
+    data = request.get_json(silent=True) or {}
+
+    learner_id = data.get("learner_id")
+
+    if learner_id is None:
+        return jsonify({
+            "error": "learner_id is required"
+        }), 400
+
+    try:
+        learner_id = int(learner_id)
+    except (TypeError, ValueError):
+        return jsonify({
+            "error": "learner_id must be an integer"
+        }), 400
+
+    learner = db.session.get(Learner, learner_id)
+
+    if not learner:
+        return jsonify({
+            "error": "Learner not found"
+        }), 404
+
+    if learner.status != "active":
+        return jsonify({
+            "error": "Only active learners can be assigned to a batch"
+        }), 400
+
+    if learner.batch_id == batch.id:
+        return jsonify({
+            "error": "Learner is already assigned to this batch"
+        }), 409
+
+    if learner.batch_id is not None:
+        return jsonify({
+            "error": "Learner is already assigned to another batch"
+        }), 409
+
+    enrollment = (
+        Enrollment.query
+        .filter_by(
+            learner_id=learner.id,
+            course_id=batch.course_id,
+            status="active",
+        )
+        .first()
+    )
+
+    if not enrollment:
+        return jsonify({
+            "error": "Learner must be actively enrolled in the batch course"
+        }), 400
+
+    learner.batch_id = batch.id
+
     db.session.commit()
 
     return jsonify({
-        "message": "Batch created successfully",
-        "batch": {
-            "id": batch.id,
-            "name": getattr(
-                batch,
-                "name",
-                None
-            ),
-            "status": getattr(
-                batch,
-                "status",
-                None
-            )
-        }
-    }), 201
+        "message": "Learner added to batch successfully",
+        "learner": learner_json(learner),
+    }), 200
 
 
 @api.delete("/admin/batches/<int:batch_id>")
@@ -8245,203 +15453,576 @@ def admin_delete_batch(
     })
 
 
-# ============================================================
-# DISCUSSIONS
-# ============================================================
+# =========================================================
+# DISCUSSION / COMMUNITY
+# =========================================================
 
-@api.get("/courses/<string:course_id>/discussions")
+@api.get("/courses/<course_id>/discussions")
 @token_required
-def get_course_discussions(
-    user,
-    course_id
-):
-    course = Course.query.get(
-        course_id
-    )
+def course_discussions(user, course_id):
+
+    # -----------------------------------------------------
+    # Check course
+    # -----------------------------------------------------
+
+    course = Course.query.get(course_id)
 
     if not course:
         return jsonify({
             "error": "Course not found"
         }), 404
 
-    try:
-            page = max(
-            int(request.args.get("page", 1)),
-            1
-        )
-    except (TypeError, ValueError):
-            page = 1
+    # -----------------------------------------------------
+    # Get all modules belonging to this course
+    # -----------------------------------------------------
 
-    try:
-            limit = min(
-            max(
-                int(request.args.get("limit", 20)),
-                1
-            ),
-            100
-        )
-    except (TypeError, ValueError):
-            limit = 20
-
-    pagination = (
-        Discussion.query
-        .join(
-            Lesson,
-            Discussion.lesson_id == Lesson.id
-        )
-        .join(
-            Module,
-            Lesson.module_id == Module.id
-        )
-        .filter(
-            Module.course_id == course_id
-        )
-        .order_by(
-            Discussion.id.desc()
-        )
-        .paginate(
-            page=page,
-            per_page=limit,
-            error_out=False
-        )
+    modules = (
+        Module.query
+        .filter_by(course_id=course.id)
+        .order_by(Module.order_no.asc())
+        .all()
     )
 
-    discussions = pagination.items
+    lesson_ids = []
+
+    lesson_details = {}
+
+    for module in modules:
+
+        lessons = (
+            Lesson.query
+            .filter_by(module_id=module.id)
+            .order_by(Lesson.order_no.asc())
+            .all()
+        )
+
+        for lesson in lessons:
+
+            lesson_ids.append(lesson.id)
+
+            lesson_details[lesson.id] = {
+                "id": lesson.id,
+                "title": lesson.title,
+                "module_id": module.id,
+                "module_title": module.title,
+            }
+
+    # -----------------------------------------------------
+    # No lessons
+    # -----------------------------------------------------
+
+    if not lesson_ids:
+        return jsonify({
+            "course": {
+                "id": course.id,
+                "title": course.title
+            },
+            "discussions": [],
+            "lessons": []
+        })
+
+    # -----------------------------------------------------
+    # Get discussions for all lessons in this course
+    # -----------------------------------------------------
+
+    rows = (
+        Discussion.query
+        .filter(
+            Discussion.lesson_id.in_(lesson_ids)
+        )
+        .order_by(
+            Discussion.created_at.desc()
+        )
+        .all()
+    )
 
     result = []
 
-    for discussion in discussions:
+    for discussion in rows:
+
         discussion_user = User.query.get(
             discussion.user_id
         )
 
+        lesson_info = lesson_details.get(
+            discussion.lesson_id,
+            {}
+        )
+
         result.append({
             "id": discussion.id,
-            "course_id": discussion.course_id,
-            "user_id": discussion.user_id,
-            "user_name": (
+            "lesson_id": discussion.lesson_id,
+            "lesson_title": lesson_info.get(
+                "title"
+            ),
+            "module_title": lesson_info.get(
+                "module_title"
+            ),
+            "message": discussion.message,
+            "user": (
                 discussion_user.name
                 if discussion_user
-                else None
+                else "Learner"
             ),
-            "message": getattr(
-                discussion,
-                "message",
-                getattr(
-                    discussion,
-                    "content",
-                    ""
-                )
-            ),
-            "created_at": (
+            "user_id": discussion.user_id,
+            "createdAt": (
                 discussion.created_at.isoformat()
-                if getattr(
-                    discussion,
-                    "created_at",
-                    None
-                )
+                if discussion.created_at
                 else None
             )
         })
 
+    # -----------------------------------------------------
+    # Return course discussions
+    # -----------------------------------------------------
+
     return jsonify({
-        "discussions": result,
-        "pagination": {
-            "page": pagination.page,
-            "limit": pagination.per_page,
-            "total": pagination.total,
-            "pages": pagination.pages,
-            "has_next": pagination.has_next,
-            "has_previous": pagination.has_prev
-        }
+        "course": {
+            "id": course.id,
+            "title": course.title
+        },
+        "lessons": list(
+            lesson_details.values()
+        ),
+        "discussions": result
     })
 
 
-@api.post("/courses/<string:course_id>/discussions")
+# =========================================================
+# CREATE COURSE DISCUSSION
+# =========================================================
+
+@api.post("/courses/<course_id>/discussions")
 @token_required
-def create_course_discussion(
-    user,
-    course_id
-):
-    course = Course.query.get(
-        course_id
-    )
+def create_course_discussion(user, course_id):
+
+    # -----------------------------------------------------
+    # Check course
+    # -----------------------------------------------------
+
+    course = Course.query.get(course_id)
 
     if not course:
         return jsonify({
             "error": "Course not found"
         }), 404
 
-    data = request.get_json(silent=True) or {}
+    # -----------------------------------------------------
+    # Read request data
+    # -----------------------------------------------------
 
-    message = data.get(
-        "message"
-    )
+    data = request.get_json(
+        silent=True
+    ) or {}
 
-    if message is None:
-        message = data.get(
-            "content",
-            ""
-        )
-
-    message = str(
-        message
+    lesson_id = str(
+        data.get("lesson_id", "")
     ).strip()
 
+    message = str(
+        data.get("message", "")
+    ).strip()
+
+    # -----------------------------------------------------
+    # Validate lesson
+    # -----------------------------------------------------
+
+    if not lesson_id:
+
+        return jsonify({
+            "error": "Lesson is required"
+        }), 400
+
+    lesson = Lesson.query.get(
+        lesson_id
+    )
+
+    if not lesson:
+
+        return jsonify({
+            "error": "Lesson not found"
+        }), 404
+
+    # -----------------------------------------------------
+    # Make sure lesson belongs to this course
+    # -----------------------------------------------------
+
+    module = Module.query.get(
+        lesson.module_id
+    )
+
+    if not module:
+
+        return jsonify({
+            "error": "Lesson module not found"
+        }), 404
+
+    if module.course_id != course.id:
+
+        return jsonify({
+            "error": "Lesson does not belong to this course"
+        }), 400
+
+    # -----------------------------------------------------
+    # Validate message
+    # -----------------------------------------------------
+
     if not message:
+
         return jsonify({
             "error": "Message is required"
         }), 400
 
-    discussion_data = {
-        "course_id": course_id,
-        "user_id": user.id
-    }
+    if len(message) > 5000:
 
-    # --------------------------------------------------------
-    # Support whichever text field exists in the model.
-    # --------------------------------------------------------
-
-    if hasattr(Discussion, "message"):
-        discussion_data["message"] = message
-    elif hasattr(Discussion, "content"):
-        discussion_data["content"] = message
-    else:
         return jsonify({
-            "error": "Discussion model does not contain a message field"
-        }), 500
+            "error": "Message cannot exceed 5000 characters"
+        }), 400
 
-    discussion = Discussion(
-        **discussion_data
+    # -----------------------------------------------------
+    # Learner enrollment security
+    # -----------------------------------------------------
+
+    if user.role == "learner":
+
+        learner = Learner.query.filter_by(
+            user_id=user.id
+        ).first()
+
+        if not learner:
+
+            return jsonify({
+                "error": "Learner profile not found"
+            }), 404
+
+        enrollment = Enrollment.query.filter_by(
+            learner_id=learner.id,
+            course_id=course.id
+        ).first()
+
+        if not enrollment:
+
+            return jsonify({
+                "error": "You are not enrolled in this course"
+            }), 403
+
+        if enrollment.status != "active":
+
+            return jsonify({
+                "error": "Your enrollment is not active"
+            }), 403
+
+    # -----------------------------------------------------
+    # Create discussion
+    # -----------------------------------------------------
+
+    row = Discussion(
+        user_id=user.id,
+        lesson_id=lesson.id,
+        message=message
     )
 
-    db.session.add(discussion)
+    db.session.add(row)
+
     db.session.commit()
+
+    # -----------------------------------------------------
+    # Response
+    # -----------------------------------------------------
 
     return jsonify({
         "message": "Discussion posted successfully",
         "discussion": {
-            "id": discussion.id,
-            "course_id": discussion.course_id,
-            "user_id": discussion.user_id,
-            "user_name": user.name,
-            "message": message,
-            "created_at": (
-                discussion.created_at.isoformat()
-                if getattr(
-                    discussion,
-                    "created_at",
-                    None
-                )
+            "id": row.id,
+            "lesson_id": row.lesson_id,
+            "lesson_title": lesson.title,
+            "module_title": module.title,
+            "message": row.message,
+            "user": user.name,
+            "user_id": user.id,
+            "createdAt": (
+                row.created_at.isoformat()
+                if row.created_at
                 else None
             )
         }
     }), 201
 
 
+# =========================================================
+# LESSON DISCUSSIONS
+# =========================================================
+
+@api.get("/lessons/<lesson_id>/discussions")
+@token_required
+def discussions(user, lesson_id):
+
+    lesson = Lesson.query.get(
+        lesson_id
+    )
+
+    if not lesson:
+
+        return jsonify({
+            "error": "Lesson not found"
+        }), 404
+
+    rows = (
+        Discussion.query
+        .filter_by(
+            lesson_id=lesson.id
+        )
+        .order_by(
+            Discussion.created_at.asc()
+        )
+        .all()
+    )
+
+    result = []
+
+    for discussion in rows:
+
+        discussion_user = User.query.get(
+            discussion.user_id
+        )
+
+        result.append({
+            "id": discussion.id,
+            "lesson_id": discussion.lesson_id,
+            "message": discussion.message,
+            "user": (
+                discussion_user.name
+                if discussion_user
+                else "Learner"
+            ),
+            "user_id": discussion.user_id,
+            "createdAt": (
+                discussion.created_at.isoformat()
+                if discussion.created_at
+                else None
+            )
+        })
+
+    return jsonify({
+        "lesson": {
+            "id": lesson.id,
+            "title": lesson.title
+        },
+        "discussions": result
+    })
+
+
+# =========================================================
+# CREATE LESSON DISCUSSION
+# =========================================================
+
+@api.post("/lessons/<lesson_id>/discussions")
+@token_required
+def create_discussion(user, lesson_id):
+
+    lesson = Lesson.query.get(
+        lesson_id
+    )
+
+    if not lesson:
+
+        return jsonify({
+            "error": "Lesson not found"
+        }), 404
+
+    data = request.get_json(
+        silent=True
+    ) or {}
+
+    message = str(
+        data.get("message", "")
+    ).strip()
+
+    if not message:
+
+        return jsonify({
+            "error": "Message is required"
+        }), 400
+
+    if len(message) > 5000:
+
+        return jsonify({
+            "error": "Message cannot exceed 5000 characters"
+        }), 400
+
+    row = Discussion(
+        user_id=user.id,
+        lesson_id=lesson.id,
+        message=message
+    )
+
+    db.session.add(row)
+
+    db.session.commit()
+
+    return jsonify({
+        "message": "Discussion posted",
+        "discussion": {
+            "id": row.id,
+            "lesson_id": row.lesson_id,
+            "message": row.message,
+            "user": user.name,
+            "user_id": user.id,
+            "createdAt": (
+                row.created_at.isoformat()
+                if row.created_at
+                else None
+            )
+        }
+    }), 201
+
+
+
 # ============================================================
-# END OF PART 6
+# NOTIFICATIONS
 # ============================================================
+
+@api.get("/notifications")
+@token_required
+def get_notifications(user):
+    notifications = (
+        Notification.query
+        .filter_by(user_id=user.id)
+        .order_by(Notification.created_at.desc())
+        .all()
+    )
+
+    return jsonify({
+        "notifications": [
+            {
+                "id": notification.id,
+                "title": notification.title,
+                "message": notification.message,
+                "notification_type": notification.notification_type,
+                "is_read": notification.is_read,
+                "link": notification.link,
+                "created_at": (
+                    notification.created_at.isoformat()
+                    if notification.created_at
+                    else None
+                ),
+                "read_at": (
+                    notification.read_at.isoformat()
+                    if notification.read_at
+                    else None
+                )
+            }
+            for notification in notifications
+        ]
+    }), 200
+
+
+@api.get("/notifications/unread-count")
+@token_required
+def get_unread_notification_count(user):
+    count = Notification.query.filter_by(
+        user_id=user.id,
+        is_read=False
+    ).count()
+
+    return jsonify({
+        "unread_count": count
+    }), 200
+
+
+@api.put("/notifications/<int:notification_id>/read")
+@token_required
+def mark_notification_as_read(user, notification_id):
+    notification = Notification.query.filter_by(
+        id=notification_id,
+        user_id=user.id
+    ).first()
+
+    if not notification:
+        return jsonify({
+            "error": "Notification not found"
+        }), 404
+
+    notification.is_read = True
+    notification.read_at = datetime.now(timezone.utc)
+
+    db.session.commit()
+
+    return jsonify({
+        "message": "Notification marked as read",
+        "notification": {
+            "id": notification.id,
+            "is_read": notification.is_read,
+            "read_at": (
+                notification.read_at.isoformat()
+                if notification.read_at
+                else None
+            )
+        }
+    }), 200
+
+
+@api.put("/notifications/read-all")
+@token_required
+def mark_all_notifications_as_read(user):
+    notifications = Notification.query.filter_by(
+        user_id=user.id,
+        is_read=False
+    ).all()
+
+    read_time = datetime.now(timezone.utc)
+
+    for notification in notifications:
+        notification.is_read = True
+        notification.read_at = read_time
+
+    db.session.commit()
+
+    return jsonify({
+        "message": "All notifications marked as read",
+        "updated_count": len(notifications)
+    }), 200
+
+@api.delete("/notifications/<int:notification_id>")
+@token_required
+def delete_notification(user, notification_id):
+    notification = Notification.query.filter_by(
+        id=notification_id,
+        user_id=user.id
+    ).first()
+
+    if not notification:
+        return jsonify({
+            "error": "Notification not found"
+        }), 404
+
+    db.session.delete(notification)
+    db.session.commit()
+
+    return jsonify({
+        "message": "Notification deleted successfully",
+        "notification_id": notification_id
+    }), 200
+
+@api.delete("/notifications")
+@token_required
+def delete_all_notifications(user):
+    notifications = Notification.query.filter_by(
+        user_id=user.id
+    ).all()
+
+    deleted_count = len(notifications)
+
+    for notification in notifications:
+        db.session.delete(notification)
+
+    db.session.commit()
+
+    return jsonify({
+        "message": "All notifications deleted successfully",
+        "deleted_count": deleted_count
+    }), 200
+
 # ============================================================
 # PROFILE
 # ============================================================

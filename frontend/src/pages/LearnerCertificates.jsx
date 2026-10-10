@@ -3,7 +3,7 @@ import DashboardLayout from '../components/DashboardLayout'
 
 const API_BASE =
   `${import.meta.env.VITE_API_BASE_URL}/api`
-
+  
 export default function LearnerCertificates() {
   const [certificates, setCertificates] = useState([])
   const [loading, setLoading] = useState(true)
@@ -174,9 +174,68 @@ export default function LearnerCertificates() {
      Print → Save as PDF
   ========================================================= */
 
-  const downloadCertificate = () => {
-    window.print()
-  }
+  const downloadCertificate = async () => {
+      if (!selectedCertificate?.id) {
+        setError('Certificate information is missing.')
+        return
+      }
+
+      try {
+        setError('')
+
+        const token = localStorage.getItem('access_token')
+
+        if (!token) {
+          throw new Error(
+            'Login session not found. Please login again.'
+          )
+        }
+
+        const response = await fetch(
+          `${API_BASE}/learner/certificates/${selectedCertificate.id}/pdf`,
+          {
+            method: 'GET',
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }
+        )
+
+        if (!response.ok) {
+          let message = 'Unable to download certificate.'
+
+          try {
+            const data = await response.json()
+            message = data.error || message
+          } catch {
+            // Response was not JSON.
+          }
+
+          throw new Error(message)
+        }
+
+        const blob = await response.blob()
+
+        const url = window.URL.createObjectURL(blob)
+
+        const link = document.createElement('a')
+        link.href = url
+        link.download =
+          `certificate-${selectedCertificate.certificate_id}.pdf`
+
+        document.body.appendChild(link)
+        link.click()
+        link.remove()
+
+        window.URL.revokeObjectURL(url)
+      } catch (error) {
+        console.error('CERTIFICATE DOWNLOAD ERROR:', error)
+
+        setError(
+          error.message || 'Unable to download certificate.'
+        )
+      }
+    }
 
   return (
     <DashboardLayout role="learner">

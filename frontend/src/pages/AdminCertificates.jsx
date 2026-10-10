@@ -3,7 +3,7 @@ import DashboardLayout from '../components/DashboardLayout'
 
 const API_BASE =
   `${import.meta.env.VITE_API_BASE_URL}/api`
-
+  
 export default function AdminCertificates() {
   const [certificates, setCertificates] = useState([])
   const [loading, setLoading] = useState(true)

@@ -35,19 +35,18 @@ class User(db.Model):
         nullable=False
     )
 
-    # admin / trainer / learner
     role = db.Column(
         db.String(30),
         nullable=False,
         default="learner"
     )
 
-    # active / inactive
     status = db.Column(
         db.String(20),
         nullable=False,
         default="active"
     )
+
     failed_login_attempts = db.Column(
         db.Integer,
         nullable=False,
@@ -137,6 +136,12 @@ class Batch(db.Model):
         db.Date
     )
 
+    course_id = db.Column(
+        db.String(80),
+        db.ForeignKey("course.id"),
+        nullable=True
+    )
+
     trainer_id = db.Column(
         db.Integer,
         db.ForeignKey("trainer.id")
@@ -213,6 +218,12 @@ class Course(db.Model):
         nullable=False
     )
 
+    course_fee = db.Column(
+        db.Float,
+        nullable=False,
+        default=0
+    )
+
     level = db.Column(
         db.String(50),
         nullable=False,
@@ -242,6 +253,68 @@ class Course(db.Model):
     trainer = db.relationship(
         "Trainer",
         backref="courses"
+    )
+
+
+# =========================================================
+# AUDIT LOG
+# =========================================================
+
+class AuditLog(db.Model):
+    __tablename__ = "audit_log"
+
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
+
+    user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("user.id"),
+        nullable=True,
+        index=True
+    )
+
+    action = db.Column(
+        db.String(100),
+        nullable=False,
+        index=True
+    )
+
+    entity_type = db.Column(
+        db.String(100),
+        nullable=False,
+        index=True
+    )
+
+    entity_id = db.Column(
+        db.String(100),
+        nullable=True
+    )
+
+    description = db.Column(
+        db.Text,
+        nullable=False
+    )
+
+    ip_address = db.Column(
+        db.String(45),
+        nullable=True
+    )
+
+    created_at = db.Column(
+        db.DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+        index=True
+    )
+
+    user = db.relationship(
+        "User",
+        backref=db.backref(
+            "audit_logs",
+            lazy=True
+        )
     )
 
 
@@ -302,27 +375,15 @@ class Lesson(db.Model):
         default=""
     )
 
-    # -----------------------------------------------------
-    # LEGACY VIDEO
-    # -----------------------------------------------------
-
     video_url = db.Column(
         db.Text,
         default=""
     )
 
-    # -----------------------------------------------------
-    # LEGACY PDF
-    # -----------------------------------------------------
-
     pdf_url = db.Column(
         db.Text,
         default=""
     )
-
-    # -----------------------------------------------------
-    # LESSON DURATION
-    # -----------------------------------------------------
 
     duration = db.Column(
         db.String(20),
@@ -334,7 +395,6 @@ class Lesson(db.Model):
         nullable=False
     )
 
-    # Multiple uploaded resources
     resources = db.relationship(
         "LessonResource",
         backref="lesson",
@@ -355,7 +415,6 @@ class LessonResource(db.Model):
         primary_key=True
     )
 
-    # Which lesson this file belongs to
     lesson_id = db.Column(
         db.String(80),
         db.ForeignKey("lesson.id"),
@@ -363,25 +422,21 @@ class LessonResource(db.Model):
         index=True
     )
 
-    # video / pdf
     resource_type = db.Column(
         db.String(20),
         nullable=False
     )
 
-    # Original file name
     file_name = db.Column(
         db.String(255),
         nullable=False
     )
 
-    # Actual file location
     file_path = db.Column(
         db.String(500),
         nullable=False
     )
 
-    # Optional title displayed in frontend
     title = db.Column(
         db.String(200),
         default=""
@@ -422,6 +477,12 @@ class Enrollment(db.Model):
         default=0
     )
 
+    course_fee = db.Column(
+        db.Float,
+        nullable=False,
+        default=0
+    )
+
     status = db.Column(
         db.String(20),
         default="active"
@@ -432,16 +493,7 @@ class Enrollment(db.Model):
         default=lambda: datetime.now(timezone.utc)
     )
 
-    __table_args__ = (
-        db.UniqueConstraint(
-            "learner_id",
-            "course_id",
-            name="uq_enrollment"
-        ),
-    )
 
-
-# =========================================================
 # LESSON PROGRESS
 # =========================================================
 
@@ -486,6 +538,60 @@ class LessonProgress(db.Model):
 
 
 # =========================================================
+# =========================================================
+# LESSON NOTES
+# =========================================================
+
+class LessonNote(db.Model):
+    __tablename__ = "lesson_note"
+
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
+
+    learner_id = db.Column(
+        db.Integer,
+        db.ForeignKey("learner.id"),
+        nullable=False,
+        index=True
+    )
+
+    lesson_id = db.Column(
+        db.String(80),
+        db.ForeignKey("lesson.id"),
+        nullable=False,
+        index=True
+    )
+
+    content = db.Column(
+        db.Text,
+        nullable=False,
+        default=""
+    )
+
+    created_at = db.Column(
+        db.DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False
+    )
+
+    updated_at = db.Column(
+        db.DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "learner_id",
+            "lesson_id",
+            name="uq_lesson_note"
+        ),
+    )
+
+
 # ASSIGNMENT
 # =========================================================
 
@@ -622,57 +728,6 @@ class Quiz(db.Model):
         default=lambda: datetime.now(timezone.utc)
     )
 
-class QuizAnswer(db.Model):
-    __tablename__ = "quiz_answer"
-
-    id = db.Column(
-        db.Integer,
-        primary_key=True
-    )
-
-    attempt_id = db.Column(
-        db.Integer,
-        db.ForeignKey("quiz_attempt.id"),
-        nullable=False
-    )
-
-    question_id = db.Column(
-        db.Integer,
-        db.ForeignKey("question.id"),
-        nullable=False
-    )
-
-    selected_answer = db.Column(
-        db.String(10),
-        nullable=True
-    )
-
-    is_correct = db.Column(
-        db.Boolean,
-        default=False
-    )
-
-    marks_awarded = db.Column(
-        db.Integer,
-        default=0
-    )
-
-    attempt = db.relationship(
-        "QuizAttempt",
-        backref=db.backref(
-            "answers",
-            lazy=True,
-            cascade="all, delete-orphan"
-        )
-    )
-
-    question = db.relationship(
-        "Question",
-        backref=db.backref(
-            "submitted_answers",
-            lazy=True
-        )
-    )
 
 # =========================================================
 # QUESTION
@@ -767,6 +822,64 @@ class QuizAttempt(db.Model):
         db.DateTime,
         nullable=True
     )
+
+
+# =========================================================
+# QUIZ ANSWER
+# =========================================================
+
+class QuizAnswer(db.Model):
+    __tablename__ = "quiz_answer"
+
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
+
+    attempt_id = db.Column(
+        db.Integer,
+        db.ForeignKey("quiz_attempt.id"),
+        nullable=False
+    )
+
+    question_id = db.Column(
+        db.Integer,
+        db.ForeignKey("question.id"),
+        nullable=False
+    )
+
+    selected_answer = db.Column(
+        db.String(10),
+        nullable=True
+    )
+
+    is_correct = db.Column(
+        db.Boolean,
+        default=False
+    )
+
+    marks_awarded = db.Column(
+        db.Integer,
+        default=0
+    )
+
+    attempt = db.relationship(
+        "QuizAttempt",
+        backref=db.backref(
+            "answers",
+            lazy=True,
+            cascade="all, delete-orphan"
+        )
+    )
+
+    question = db.relationship(
+        "Question",
+        backref=db.backref(
+            "submitted_answers",
+            lazy=True
+        )
+    )
+
 
 # =========================================================
 # CERTIFICATE
@@ -894,6 +1007,12 @@ class Payment(db.Model):
         nullable=False
     )
 
+    enrollment_id = db.Column(
+        db.Integer,
+        db.ForeignKey("enrollment.id"),
+        nullable=False
+    )
+
     amount = db.Column(
         db.Float,
         nullable=False
@@ -913,6 +1032,22 @@ class Payment(db.Model):
         default="pending"
     )
 
+    # Razorpay transaction identifiers
+    # Nullable to preserve existing payment records.
+
+    razorpay_order_id = db.Column(
+        db.String(100),
+        unique=True,
+        nullable=True,
+        index=True
+    )
+
+    razorpay_payment_id = db.Column(
+        db.String(100),
+        unique=True,
+        nullable=True,
+        index=True
+    )
 
 # =========================================================
 # INVOICE
@@ -1070,17 +1205,28 @@ class CourseDocument(db.Model):
         backref="documents"
     )
 
-# ============================================================
-# CODING EXAM MODELS
-# ============================================================
+
+# =========================================================
+# CODING EXAM
+# =========================================================
 
 class CodingExam(db.Model):
     __tablename__ = "coding_exam"
 
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
 
-    title = db.Column(db.String(200), nullable=False)
-    description = db.Column(db.Text, default="")
+    title = db.Column(
+        db.String(200),
+        nullable=False
+    )
+
+    description = db.Column(
+        db.Text,
+        default=""
+    )
 
     course_id = db.Column(
         db.String(80),
@@ -1094,8 +1240,15 @@ class CodingExam(db.Model):
         nullable=False
     )
 
-    duration = db.Column(db.Integer, default=60)
-    total_marks = db.Column(db.Integer, default=0)
+    duration = db.Column(
+        db.Integer,
+        default=60
+    )
+
+    total_marks = db.Column(
+        db.Integer,
+        default=0
+    )
 
     status = db.Column(
         db.String(20),
@@ -1114,10 +1267,17 @@ class CodingExam(db.Model):
     )
 
 
+# =========================================================
+# CODING QUESTION
+# =========================================================
+
 class CodingQuestion(db.Model):
     __tablename__ = "coding_question"
 
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
 
     exam_id = db.Column(
         db.Integer,
@@ -1187,10 +1347,17 @@ class CodingQuestion(db.Model):
     )
 
 
+# =========================================================
+# CODING TEST CASE
+# =========================================================
+
 class CodingTestCase(db.Model):
     __tablename__ = "coding_test_case"
 
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
 
     question_id = db.Column(
         db.Integer,
@@ -1219,10 +1386,17 @@ class CodingTestCase(db.Model):
     )
 
 
+# =========================================================
+# CODING SUBMISSION
+# =========================================================
+
 class CodingSubmission(db.Model):
     __tablename__ = "coding_submission"
 
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
 
     exam_id = db.Column(
         db.Integer,
@@ -1282,9 +1456,10 @@ class CodingSubmission(db.Model):
         default=lambda: datetime.now(timezone.utc)
     )
 
-# ============================================================
-# CODING EXAM PROCTORING / MONITORING MODELS
-# ============================================================
+
+# =========================================================
+# CODING EXAM SESSION
+# =========================================================
 
 class CodingExamSession(db.Model):
     __tablename__ = "coding_exam_session"
@@ -1344,6 +1519,10 @@ class CodingExamSession(db.Model):
     )
 
 
+# =========================================================
+# CODING EXAM MONITORING EVENT
+# =========================================================
+
 class CodingExamMonitoringEvent(db.Model):
     __tablename__ = "coding_exam_monitoring_event"
 
@@ -1380,6 +1559,10 @@ class CodingExamMonitoringEvent(db.Model):
     )
 
 
+# =========================================================
+# CODING EXAM SCREENSHOT
+# =========================================================
+
 class CodingExamScreenshot(db.Model):
     __tablename__ = "coding_exam_screenshot"
 
@@ -1405,9 +1588,10 @@ class CodingExamScreenshot(db.Model):
         nullable=False
     )
 
-# ============================================================
+
+# =========================================================
 # LEARNING TIME
-# ============================================================
+# =========================================================
 
 class LearningTime(db.Model):
     __tablename__ = "learning_time"
@@ -1447,4 +1631,609 @@ class LearningTime(db.Model):
         db.DateTime,
         default=lambda: datetime.now(timezone.utc),
         nullable=False
+    )
+
+
+# =========================================================
+# MIXED EXAMS / QUESTION BANK / INVITES
+# =========================================================
+
+class MixedExam(db.Model):
+    __tablename__ = "mixed_exam"
+
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
+
+    title = db.Column(
+        db.String(200),
+        nullable=False
+    )
+
+    description = db.Column(
+        db.Text,
+        default=""
+    )
+
+    course_id = db.Column(
+        db.String(80),
+        db.ForeignKey("course.id"),
+        nullable=False
+    )
+
+    trainer_id = db.Column(
+        db.Integer,
+        db.ForeignKey("trainer.id"),
+        nullable=False
+    )
+
+    duration_minutes = db.Column(
+        db.Integer,
+        default=60,
+        nullable=False
+    )
+
+    total_marks = db.Column(
+        db.Integer,
+        default=0,
+        nullable=False
+    )
+
+    status = db.Column(
+        db.String(20),
+        default="draft",
+        nullable=False
+    )
+
+    created_at = db.Column(
+        db.DateTime,
+        default=lambda: datetime.now(timezone.utc)
+    )
+
+    updated_at = db.Column(
+        db.DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+
+# =========================================================
+# MIXED EXAM SECTION
+# =========================================================
+
+class MixedExamSection(db.Model):
+    __tablename__ = "mixed_exam_section"
+
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
+
+    exam_id = db.Column(
+        db.Integer,
+        db.ForeignKey("mixed_exam.id"),
+        nullable=False
+    )
+
+    title = db.Column(
+        db.String(200),
+        nullable=False
+    )
+
+    section_type = db.Column(
+        db.String(20),
+        nullable=False
+    )
+
+    order_index = db.Column(
+        db.Integer,
+        default=0,
+        nullable=False
+    )
+
+    marks = db.Column(
+        db.Integer,
+        default=0,
+        nullable=False
+    )
+
+
+# =========================================================
+# QUESTION BANK
+# =========================================================
+
+class QuestionBank(db.Model):
+    __tablename__ = "question_bank"
+
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
+
+    trainer_id = db.Column(
+        db.Integer,
+        db.ForeignKey("trainer.id"),
+        nullable=False
+    )
+
+    title = db.Column(
+        db.String(200),
+        nullable=False
+    )
+
+    description = db.Column(
+        db.Text,
+        default=""
+    )
+
+    created_at = db.Column(
+        db.DateTime,
+        default=lambda: datetime.now(timezone.utc)
+    )
+
+
+# =========================================================
+# QUESTION BANK ITEM
+# =========================================================
+
+class QuestionBankItem(db.Model):
+    __tablename__ = "question_bank_item"
+
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
+
+    bank_id = db.Column(
+        db.Integer,
+        db.ForeignKey("question_bank.id"),
+        nullable=False
+    )
+
+    question_type = db.Column(
+        db.String(20),
+        nullable=False
+    )
+
+    question_text = db.Column(
+        db.Text,
+        nullable=False
+    )
+
+    option_a = db.Column(
+        db.String(500)
+    )
+
+    option_b = db.Column(
+        db.String(500)
+    )
+
+    option_c = db.Column(
+        db.String(500)
+    )
+
+    option_d = db.Column(
+        db.String(500)
+    )
+
+    correct_answer = db.Column(
+        db.String(10)
+    )
+
+    coding_description = db.Column(
+        db.Text,
+        default=""
+    )
+
+    starter_code = db.Column(
+        db.Text,
+        default=""
+    )
+
+    language = db.Column(
+        db.String(30),
+        default="python"
+    )
+
+    difficulty = db.Column(
+        db.String(20),
+        default="medium"
+    )
+
+    marks = db.Column(
+        db.Integer,
+        default=1
+    )
+
+    created_at = db.Column(
+        db.DateTime,
+        default=lambda: datetime.now(timezone.utc)
+    )
+
+
+# =========================================================
+# MIXED EXAM QUESTION
+# =========================================================
+
+class MixedExamQuestion(db.Model):
+    __tablename__ = "mixed_exam_question"
+
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
+
+    section_id = db.Column(
+        db.Integer,
+        db.ForeignKey("mixed_exam_section.id"),
+        nullable=False
+    )
+
+    question_type = db.Column(
+        db.String(20),
+        nullable=False
+    )
+
+    question_bank_item_id = db.Column(
+        db.Integer,
+        db.ForeignKey("question_bank_item.id"),
+        nullable=True
+    )
+
+    question_text = db.Column(
+        db.Text,
+        nullable=False
+    )
+
+    option_a = db.Column(
+        db.String(500)
+    )
+
+    option_b = db.Column(
+        db.String(500)
+    )
+
+    option_c = db.Column(
+        db.String(500)
+    )
+
+    option_d = db.Column(
+        db.String(500)
+    )
+
+    correct_answer = db.Column(
+        db.String(10)
+    )
+
+    coding_description = db.Column(
+        db.Text,
+        default=""
+    )
+
+    starter_code = db.Column(
+        db.Text,
+        default=""
+    )
+
+    language = db.Column(
+        db.String(30),
+        default="python"
+    )
+
+    marks = db.Column(
+        db.Integer,
+        default=1
+    )
+
+    order_index = db.Column(
+        db.Integer,
+        default=0
+    )
+
+
+# =========================================================
+# MIXED EXAM INVITE
+# =========================================================
+
+class MixedExamInvite(db.Model):
+    __tablename__ = "mixed_exam_invite"
+
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
+
+    exam_id = db.Column(
+        db.Integer,
+        db.ForeignKey("mixed_exam.id"),
+        nullable=False
+    )
+
+    invite_code = db.Column(
+        db.String(80),
+        unique=True,
+        nullable=False,
+        index=True
+    )
+
+    candidate_name = db.Column(
+        db.String(200)
+    )
+
+    candidate_email = db.Column(
+        db.String(255)
+    )
+
+    expires_at = db.Column(
+        db.DateTime
+    )
+
+    max_attempts = db.Column(
+        db.Integer,
+        default=1,
+        nullable=False
+    )
+
+    is_active = db.Column(
+        db.Boolean,
+        default=True,
+        nullable=False
+    )
+
+    created_at = db.Column(
+        db.DateTime,
+        default=lambda: datetime.now(timezone.utc)
+    )
+
+
+# =========================================================
+# MIXED EXAM ATTEMPT
+# =========================================================
+
+class MixedExamAttempt(db.Model):
+    __tablename__ = "mixed_exam_attempt"
+
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
+
+    exam_id = db.Column(
+        db.Integer,
+        db.ForeignKey("mixed_exam.id"),
+        nullable=False
+    )
+
+    invite_id = db.Column(
+        db.Integer,
+        db.ForeignKey("mixed_exam_invite.id"),
+        nullable=False
+    )
+
+    candidate_name = db.Column(
+        db.String(200)
+    )
+
+    candidate_email = db.Column(
+        db.String(255)
+    )
+
+    status = db.Column(
+        db.String(20),
+        default="in_progress",
+        nullable=False
+    )
+
+    started_at = db.Column(
+        db.DateTime,
+        default=lambda: datetime.now(timezone.utc)
+    )
+
+    submitted_at = db.Column(
+        db.DateTime
+    )
+
+    score = db.Column(
+        db.Integer,
+        default=0,
+        nullable=False
+    )
+
+    total_marks = db.Column(
+        db.Integer,
+        default=0,
+        nullable=False
+    )
+
+
+# =========================================================
+# MIXED EXAM ANSWER
+# =========================================================
+
+class MixedExamAnswer(db.Model):
+    __tablename__ = "mixed_exam_answer"
+
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
+
+    attempt_id = db.Column(
+        db.Integer,
+        db.ForeignKey("mixed_exam_attempt.id"),
+        nullable=False
+    )
+
+    question_id = db.Column(
+        db.Integer,
+        db.ForeignKey("mixed_exam_question.id"),
+        nullable=False
+    )
+
+    selected_answer = db.Column(
+        db.String(10)
+    )
+
+    source_code = db.Column(
+        db.Text
+    )
+
+    language = db.Column(
+        db.String(30)
+    )
+
+    is_correct = db.Column(
+        db.Boolean
+    )
+
+    marks_awarded = db.Column(
+        db.Integer,
+        default=0,
+        nullable=False
+    )
+
+    submitted_at = db.Column(
+        db.DateTime,
+        default=lambda: datetime.now(timezone.utc)
+    )
+
+# =========================================================
+# CALENDAR EVENT
+# =========================================================
+
+class CalendarEvent(db.Model):
+    __tablename__ = "calendar_event"
+
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
+
+    course_id = db.Column(
+        db.String(80),
+        db.ForeignKey("course.id"),
+        nullable=False,
+        index=True
+    )
+
+    trainer_id = db.Column(
+        db.Integer,
+        db.ForeignKey("trainer.id"),
+        nullable=True,
+        index=True
+    )
+
+    title = db.Column(
+        db.String(200),
+        nullable=False
+    )
+
+    description = db.Column(
+        db.Text,
+        default=""
+    )
+
+    event_type = db.Column(
+        db.String(30),
+        nullable=False,
+        default="live_class"
+    )
+
+    start_at = db.Column(
+        db.DateTime,
+        nullable=False
+    )
+
+    end_at = db.Column(
+        db.DateTime,
+        nullable=True
+    )
+
+    meeting_url = db.Column(
+        db.Text,
+        default=""
+    )
+
+    created_at = db.Column(
+        db.DateTime,
+        default=lambda: datetime.now(timezone.utc)
+    )
+
+    updated_at = db.Column(
+        db.DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+    course = db.relationship(
+        "Course",
+        backref="calendar_events"
+    )
+
+    trainer = db.relationship(
+        "Trainer",
+        backref="calendar_events"
+    )
+
+# =========================================================
+# NOTIFICATION
+# =========================================================
+
+class Notification(db.Model):
+    __tablename__ = "notification"
+
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
+
+    user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("user.id"),
+        nullable=False,
+        index=True
+    )
+
+    title = db.Column(
+        db.String(200),
+        nullable=False
+    )
+
+    message = db.Column(
+        db.Text,
+        nullable=False
+    )
+
+    notification_type = db.Column(
+        db.String(50),
+        nullable=False,
+        default="general"
+    )
+
+    is_read = db.Column(
+        db.Boolean,
+        default=False,
+        nullable=False
+    )
+
+    link = db.Column(
+        db.String(500),
+        default=""
+    )
+
+    created_at = db.Column(
+        db.DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False
+    )
+
+    read_at = db.Column(
+        db.DateTime,
+        nullable=True
+    )
+
+    user = db.relationship(
+        "User",
+        backref="notifications"
     )

@@ -25,6 +25,7 @@ export default function LessonPlayer() {
   const navigate = useNavigate()
 
   const { showNotification } = useNotification()
+
   const [course, setCourse] = useState(null)
   const [modules, setModules] = useState([])
   const [lesson, setLesson] = useState(null)
@@ -33,8 +34,21 @@ export default function LessonPlayer() {
   const [error, setError] = useState('')
 
   const [savingProgress, setSavingProgress] = useState(false)
+  const [videoCompleted, setVideoCompleted] = useState(false)
 
-  // Authenticated media Blob URLs
+  // =========================================================
+  // LESSON NOTES
+  // =========================================================
+
+  const [notes, setNotes] = useState('')
+  const [loadingNotes, setLoadingNotes] = useState(false)
+  const [savingNotes, setSavingNotes] = useState(false)
+  const [notesUpdatedAt, setNotesUpdatedAt] = useState(null)
+
+  // =========================================================
+  // AUTHENTICATED MEDIA BLOB URLS
+  // =========================================================
+
   const [videoBlobUrl, setVideoBlobUrl] = useState('')
   const [pdfBlobUrl, setPdfBlobUrl] = useState('')
 
@@ -56,11 +70,11 @@ export default function LessonPlayer() {
     const apiBaseUrl =
       import.meta.env.VITE_API_BASE_URL
 
-    if (fileUrl.startsWith(apiBaseUrl)) {
-      return fileUrl.replace(
-        apiBaseUrl,
-        ''
-      )
+    if (
+      apiBaseUrl &&
+      fileUrl.startsWith(apiBaseUrl)
+    ) {
+      return fileUrl.replace(apiBaseUrl, '')
     }
 
     if (fileUrl.startsWith('/')) {
@@ -70,21 +84,18 @@ export default function LessonPlayer() {
     return `/${fileUrl}`
   }
 
-    // =========================================================
+
+  // =========================================================
   // LESSON RESOURCES
   // =========================================================
 
-  const videoResource =
-    lesson?.resources?.find(
-      (resource) =>
-        resource.type === 'video'
-    )
+  const videoResource = lesson?.resources?.find(
+    (resource) => resource.type === 'video'
+  )
 
-  const pdfResource =
-    lesson?.resources?.find(
-      (resource) =>
-        resource.type === 'pdf'
-    )
+  const pdfResource = lesson?.resources?.find(
+    (resource) => resource.type === 'pdf'
+  )
 
   const videoUrl =
     videoResource?.url ||
@@ -108,14 +119,16 @@ export default function LessonPlayer() {
       try {
         setLoading(true)
         setError('')
+        setLesson(null)
+
+        // Reset lesson-specific state when navigating.
+        setNotes('')
+        setNotesUpdatedAt(null)
+        setLoadingNotes(false)
+        setVideoCompleted(false)
 
         const data = await apiRequest(
           `/api/courses/${courseId}`
-        )
-
-        console.log(
-          'LESSON PLAYER DATA:',
-          data
         )
 
         if (cancelled) {
@@ -124,22 +137,17 @@ export default function LessonPlayer() {
 
         setCourse(data.course || null)
 
-        const loadedModules =
-          data.modules || []
+        const loadedModules = data.modules || []
 
         setModules(loadedModules)
 
-        const allLoadedLessons =
-          loadedModules.flatMap(
-            (module) =>
-              module.lessons || []
-          )
+        const allLoadedLessons = loadedModules.flatMap(
+          (module) => module.lessons || []
+        )
 
-        const foundLesson =
-          allLoadedLessons.find(
-            (item) =>
-              item.id === lessonId
-          )
+        const foundLesson = allLoadedLessons.find(
+          (item) => String(item.id) === String(lessonId)
+        )
 
         if (!foundLesson) {
           setError('Lesson not found')
@@ -150,15 +158,11 @@ export default function LessonPlayer() {
         setLesson(foundLesson)
 
       } catch (err) {
-        console.error(
-          'Lesson loading error:',
-          err
-        )
+        console.error('Lesson loading error:', err)
 
         if (!cancelled) {
           setError(
-            err.message ||
-            'Unable to load lesson'
+            err.message || 'Unable to load lesson'
           )
         }
 
@@ -174,7 +178,6 @@ export default function LessonPlayer() {
     return () => {
       cancelled = true
     }
-
   }, [courseId, lessonId])
 
 
@@ -182,37 +185,130 @@ export default function LessonPlayer() {
   // ALL LESSONS
   // =========================================================
 
-  const allLessons = modules.flatMap(
-  (module) =>
-    module.lessons || []
-)
+  const allLessons = useMemo(
+    () => modules.flatMap(
+      (module) => module.lessons || []
+    ),
+    [modules]
+  )
 
 
   // =========================================================
   // CURRENT / NEXT / PREVIOUS LESSON
   // =========================================================
 
-  const currentIndex =
-    allLessons.findIndex(
-      (item) =>
-        item.id === lessonId
-    )
+  const currentIndex = allLessons.findIndex(
+    (item) => String(item.id) === String(lessonId)
+  )
 
   const nextLesson =
     currentIndex >= 0 &&
-    currentIndex <
-      allLessons.length - 1
-      ? allLessons[
-          currentIndex + 1
-        ]
+    currentIndex < allLessons.length - 1
+      ? allLessons[currentIndex + 1]
       : null
 
   const previousLesson =
     currentIndex > 0
-      ? allLessons[
-          currentIndex - 1
-        ]
+      ? allLessons[currentIndex - 1]
       : null
+
+
+  // =========================================================
+  // LOAD SAVED LESSON NOTES
+  // =========================================================
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadNotes() {
+      if (!lesson || !lessonId) {
+        return
+      }
+
+      try {
+        setLoadingNotes(true)
+
+        setNotes('')
+        setNotesUpdatedAt(null)
+
+        const data = await apiRequest(
+          `/api/learner/lessons/${lessonId}/notes`
+        )
+
+        if (cancelled) {
+          return
+        }
+
+        setNotes(data.content || '')
+        setNotesUpdatedAt(data.updated_at || null)
+
+      } catch (err) {
+        console.error('Lesson notes loading error:', err)
+
+        if (!cancelled) {
+          setNotes('')
+          setNotesUpdatedAt(null)
+
+          showNotification(
+            err.message || 'Unable to load lesson notes'
+          )
+        }
+
+      } finally {
+        if (!cancelled) {
+          setLoadingNotes(false)
+        }
+      }
+    }
+
+    loadNotes()
+
+    return () => {
+      cancelled = true
+    }
+  }, [lessonId, lesson])
+
+
+  // =========================================================
+  // SAVE LESSON NOTES
+  // =========================================================
+
+  const saveLessonNotes = async () => {
+    if (!lesson || savingNotes || loadingNotes) {
+      return
+    }
+
+    try {
+      setSavingNotes(true)
+
+      const data = await apiRequest(
+        `/api/learner/lessons/${lesson.id}/notes`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({
+            content: notes
+          })
+        }
+      )
+
+      setNotes(data.content ?? notes)
+      setNotesUpdatedAt(data.updated_at || null)
+
+      showNotification(
+        'Lesson notes saved successfully!'
+      )
+
+    } catch (err) {
+      console.error('Lesson notes saving error:', err)
+
+      showNotification(
+        err.message || 'Unable to save lesson notes'
+      )
+
+    } finally {
+      setSavingNotes(false)
+    }
+  }
 
 
   // =========================================================
@@ -226,6 +322,7 @@ export default function LessonPlayer() {
     async function loadVideo() {
       if (!videoUrl) {
         setVideoBlobUrl('')
+        setVideoLoading(false)
         return
       }
 
@@ -233,41 +330,30 @@ export default function LessonPlayer() {
         setVideoLoading(true)
         setMediaError('')
 
-        const endpoint =
-          getResourceEndpoint(
-            videoUrl
-          )
+        const endpoint = getResourceEndpoint(videoUrl)
 
         if (!endpoint) {
           return
         }
 
-        const blob =
-          await fetchAuthenticatedBlob(
-            endpoint
-          )
+        const blob = await fetchAuthenticatedBlob(endpoint)
 
         if (cancelled) {
           return
         }
 
-        objectUrl =
-          URL.createObjectURL(blob)
+        objectUrl = URL.createObjectURL(blob)
 
         setVideoBlobUrl(objectUrl)
 
       } catch (err) {
-        console.error(
-          'Video loading error:',
-          err
-        )
+        console.error('Video loading error:', err)
 
         if (!cancelled) {
           setVideoBlobUrl('')
 
           setMediaError(
-            err.message ||
-            'Unable to load video'
+            err.message || 'Unable to load video'
           )
         }
 
@@ -284,14 +370,11 @@ export default function LessonPlayer() {
       cancelled = true
 
       if (objectUrl) {
-        URL.revokeObjectURL(
-          objectUrl
-        )
+        URL.revokeObjectURL(objectUrl)
       }
 
       setVideoBlobUrl('')
     }
-
   }, [videoUrl])
 
 
@@ -301,7 +384,7 @@ export default function LessonPlayer() {
 
   const openPdf = async () => {
     if (!pdfUrl) {
-      alert(
+      showNotification(
         'No PDF has been uploaded for this lesson.'
       )
       return
@@ -310,63 +393,44 @@ export default function LessonPlayer() {
     try {
       setPdfLoading(true)
 
-      const endpoint =
-        getResourceEndpoint(
-          pdfUrl
-        )
+      const endpoint = getResourceEndpoint(pdfUrl)
 
       if (!endpoint) {
-        throw new Error(
-          'PDF URL is not available.'
-        )
+        throw new Error('PDF URL is not available.')
       }
 
-      const blob =
-        await fetchAuthenticatedBlob(
-          endpoint
-        )
+      const blob = await fetchAuthenticatedBlob(endpoint)
 
-      const objectUrl =
-        URL.createObjectURL(blob)
+      const objectUrl = URL.createObjectURL(blob)
 
       setPdfBlobUrl(objectUrl)
 
-      const newWindow =
-        window.open(
-          objectUrl,
-          '_blank',
-          'noopener,noreferrer'
-        )
+      const newWindow = window.open(
+        objectUrl,
+        '_blank',
+        'noopener,noreferrer'
+      )
 
       if (!newWindow) {
-        alert(
+        showNotification(
           'Your browser blocked the PDF popup. Please allow popups for this site.'
         )
       }
 
       // Keep the Blob URL alive for the PDF tab.
       setTimeout(() => {
-        URL.revokeObjectURL(
-          objectUrl
-        )
+        URL.revokeObjectURL(objectUrl)
 
-        setPdfBlobUrl(
-          (currentUrl) =>
-            currentUrl === objectUrl
-              ? ''
-              : currentUrl
+        setPdfBlobUrl((currentUrl) =>
+          currentUrl === objectUrl ? '' : currentUrl
         )
       }, 60000)
 
     } catch (err) {
-      console.error(
-        'PDF open error:',
-        err
-      )
+      console.error('PDF open error:', err)
 
       showNotification(
-        err.message ||
-        'Unable to open PDF'
+        err.message || 'Unable to open PDF'
       )
 
     } finally {
@@ -379,90 +443,68 @@ export default function LessonPlayer() {
   // MARK LESSON COMPLETE
   // =========================================================
 
-  const markLessonComplete =
-    async () => {
+  const markLessonComplete = async () => {
+    if (!videoCompleted && videoUrl) {
+      showNotification(
+        'Please complete watching the video before marking the lesson complete.'
+      )
+      return
+    }
 
-      if (!lesson) {
-        return
-      }
+    if (!lesson || savingProgress) {
+      return
+    }
 
-      try {
-        setSavingProgress(true)
+    try {
+      setSavingProgress(true)
 
-        const data =
-          await apiRequest(
-            `/api/learner/lessons/${lesson.id}/progress`,
-            {
-              method: 'POST',
-
-              body: JSON.stringify({
-                completed: true
-              })
-            }
-          )
-
-        console.log(
-          'PROGRESS UPDATED:',
-          data
-        )
-
-        setLesson(
-          (current) => ({
-            ...current,
+      const data = await apiRequest(
+        `/api/learner/lessons/${lesson.id}/progress`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
             completed: true
           })
-        )
+        }
+      )
 
-        setModules(
-          (currentModules) =>
-            currentModules.map(
-              (module) => ({
-                ...module,
+      setLesson((current) => ({
+        ...current,
+        completed: true
+      }))
 
-                lessons:
-                  (
-                    module.lessons ||
-                    []
-                  ).map(
-                    (item) =>
-                      item.id ===
-                      lesson.id
-                        ? {
-                            ...item,
-                            completed:
-                              true
-                          }
-                        : item
-                  )
-              })
-            )
-        )
+      setModules((currentModules) =>
+        currentModules.map((module) => ({
+          ...module,
+          lessons: (module.lessons || []).map((item) =>
+            String(item.id) === String(lesson.id)
+              ? {
+                  ...item,
+                  completed: true
+                }
+              : item
+          )
+        }))
+      )
 
-        setCourse(
-          (current) => ({
-            ...current,
+      setCourse((current) => ({
+        ...current,
+        progress: data.courseProgress ?? 0
+      }))
 
-            progress:
-              data.courseProgress ||
-              0
-          })
-        )
+      showNotification('Lesson completed successfully!')
 
-      } catch (err) {
-        console.error(
-          'Progress update error:',
-          err
-        )
+    } catch (err) {
+      console.error('Progress update error:', err)
 
-        showNotification(
-          err.message ||
-          'Unable to save progress'
-        )
+      showNotification(
+        err.message || 'Unable to save progress'
+      )
 
-      } finally {
-        setSavingProgress(false)
-      }
+    } finally {
+      setSavingProgress(false)
     }
+  }
 
 
   // =========================================================
@@ -471,9 +513,7 @@ export default function LessonPlayer() {
 
   if (loading) {
     return (
-      <DashboardLayout
-        role="learner"
-      >
+      <DashboardLayout role="learner">
         <div
           className="card"
           style={{
@@ -494,24 +534,16 @@ export default function LessonPlayer() {
 
   if (error || !lesson) {
     return (
-      <DashboardLayout
-        role="learner"
-      >
+      <DashboardLayout role="learner">
         <div
           className="card"
           style={{
             padding: 30
           }}
         >
+          <h2>Unable to load lesson</h2>
 
-          <h2>
-            Unable to load lesson
-          </h2>
-
-          <p>
-            {error ||
-              'Lesson not found'}
-          </p>
+          <p>{error || 'Lesson not found'}</p>
 
           <Link
             to={`/learner/course/${courseId}`}
@@ -519,7 +551,6 @@ export default function LessonPlayer() {
           >
             ← Back to Course
           </Link>
-
         </div>
       </DashboardLayout>
     )
@@ -531,34 +562,26 @@ export default function LessonPlayer() {
   // =========================================================
 
   return (
-    <DashboardLayout
-      role="learner"
-    >
+    <DashboardLayout role="learner">
 
-      {/* =====================================================
-          TOP HEADER
-      ===================================================== */}
+      {/* TOP HEADER */}
 
       <div
         style={{
           display: 'flex',
-          justifyContent:
-            'space-between',
+          justifyContent: 'space-between',
           alignItems: 'center',
           marginBottom: 14,
           gap: 15,
           flexWrap: 'wrap'
         }}
       >
-
         <div>
-
           <Link
             to={`/learner/course/${courseId}`}
             style={{
               fontSize: 13,
-              color:
-                'var(--text-500)'
+              color: 'var(--text-500)'
             }}
           >
             ← {course?.title}
@@ -572,7 +595,6 @@ export default function LessonPlayer() {
           >
             {lesson.title}
           </h1>
-
         </div>
 
         <strong
@@ -580,64 +602,47 @@ export default function LessonPlayer() {
             color: '#2563eb'
           }}
         >
-          Course Progress:{' '}
-          {course?.progress || 0}%
-          {' '}Complete
+          Course Progress: {course?.progress || 0}% Complete
         </strong>
-
       </div>
 
 
-      {/* =====================================================
-          MAIN GRID
-      ===================================================== */}
+      {/* MAIN GRID */}
 
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns:
-            'minmax(0, 1fr) 360px',
+          gridTemplateColumns: 'minmax(0, 1fr) 360px',
           gap: 18,
           alignItems: 'start'
         }}
       >
 
-        {/* ===================================================
-            LEFT SIDE
-        =================================================== */}
+        {/* LEFT SIDE */}
 
         <div>
 
-          {/* =================================================
-              VIDEO
-          ================================================= */}
+          {/* VIDEO */}
 
           <div
             style={{
-              background:
-                '#0b1028',
+              background: '#0b1028',
               borderRadius: 14,
               minHeight: 400,
               display: 'flex',
-              alignItems:
-                'center',
-              justifyContent:
-                'center',
+              alignItems: 'center',
+              justifyContent: 'center',
               overflow: 'hidden',
               marginBottom: 18
             }}
           >
-
             {videoLoading ? (
-
               <div
                 style={{
                   color: 'white',
-                  textAlign:
-                    'center'
+                  textAlign: 'center'
                 }}
               >
-
                 <div
                   style={{
                     fontSize: 40,
@@ -647,14 +652,9 @@ export default function LessonPlayer() {
                   🎥
                 </div>
 
-                <h3>
-                  Loading video...
-                </h3>
-
+                <h3>Loading video...</h3>
               </div>
-
             ) : videoBlobUrl ? (
-
               <video
                 controls
                 preload="metadata"
@@ -663,25 +663,25 @@ export default function LessonPlayer() {
                   maxHeight: 520,
                   display: 'block'
                 }}
-                src={
-                  videoBlobUrl
-                }
+                src={videoBlobUrl}
+                onEnded={() => {
+                  setVideoCompleted(true)
+
+                  showNotification(
+                    'Video completed! You can now mark the lesson complete.'
+                  )
+                }}
               >
-                Your browser does not
-                support video playback.
+                Your browser does not support video playback.
               </video>
-
             ) : (
-
               <div
                 style={{
-                  textAlign:
-                    'center',
+                  textAlign: 'center',
                   color: 'white',
                   padding: 30
                 }}
               >
-
                 <div
                   style={{
                     fontSize: 52,
@@ -691,26 +691,20 @@ export default function LessonPlayer() {
                   ▶
                 </div>
 
-                <h3>
-                  No video uploaded
-                </h3>
+                <h3>No video uploaded</h3>
 
                 <p
                   style={{
-                    color:
-                      '#aeb6d1'
+                    color: '#aeb6d1'
                   }}
                 >
-                  The trainer has not
-                  uploaded a video for
-                  this lesson yet.
+                  The trainer has not uploaded a video for this lesson yet.
                 </p>
 
                 {mediaError && (
                   <p
                     style={{
-                      color:
-                        '#fca5a5',
+                      color: '#fca5a5',
                       marginTop: 12,
                       fontSize: 13
                     }}
@@ -718,33 +712,24 @@ export default function LessonPlayer() {
                     {mediaError}
                   </p>
                 )}
-
               </div>
-
             )}
-
           </div>
 
 
-          {/* =================================================
-              LESSON TITLE + NAVIGATION
-          ================================================= */}
+          {/* LESSON TITLE + NAVIGATION */}
 
           <div
             style={{
               display: 'flex',
-              justifyContent:
-                'space-between',
-              alignItems:
-                'center',
+              justifyContent: 'space-between',
+              alignItems: 'center',
               gap: 15,
               marginBottom: 18,
               flexWrap: 'wrap'
             }}
           >
-
             <div>
-
               <h2
                 style={{
                   margin: 0
@@ -756,27 +741,20 @@ export default function LessonPlayer() {
               <div
                 style={{
                   marginTop: 5,
-                  color:
-                    'var(--text-500)'
+                  color: 'var(--text-500)'
                 }}
               >
-                Duration:{' '}
-                {lesson.duration ||
-                  '00:00'}
+                Duration: {lesson.duration || '00:00'}
               </div>
-
             </div>
-
 
             <div
               style={{
                 display: 'flex',
                 gap: 8,
-                flexWrap:
-                  'wrap'
+                flexWrap: 'wrap'
               }}
             >
-
               {previousLesson && (
                 <button
                   className="btn btn-outline"
@@ -804,49 +782,41 @@ export default function LessonPlayer() {
                   Next Lesson →
                 </button>
               )}
-
             </div>
-
           </div>
 
 
-          {/* =================================================
-              COMPLETE BUTTON
-          ================================================= */}
+          {/* COMPLETE BUTTON */}
 
           <div
             style={{
               display: 'flex',
-              justifyContent:
-                'flex-end',
+              justifyContent: 'flex-end',
               marginBottom: 20
             }}
           >
-
             <button
               className="btn btn-primary"
               type="button"
-              onClick={
-                markLessonComplete
-              }
+              onClick={markLessonComplete}
               disabled={
                 savingProgress ||
-                lesson.completed
+                lesson.completed ||
+                (!!videoUrl && !videoCompleted)
               }
             >
               {lesson.completed
                 ? '✓ Lesson Completed'
                 : savingProgress
                 ? 'Saving...'
+                : videoUrl && !videoCompleted
+                ? 'Watch the video to continue'
                 : 'Mark Lesson Complete'}
             </button>
-
           </div>
 
 
-          {/* =================================================
-              RESOURCES
-          ================================================= */}
+          {/* RESOURCES */}
 
           <div
             className="card"
@@ -855,7 +825,6 @@ export default function LessonPlayer() {
               marginBottom: 18
             }}
           >
-
             <h2
               style={{
                 marginTop: 0
@@ -866,76 +835,56 @@ export default function LessonPlayer() {
 
             <p
               style={{
-                color:
-                  'var(--text-500)'
+                color: 'var(--text-500)'
               }}
             >
               Resources for this lesson.
             </p>
 
-
             {pdfUrl ? (
-
               <div
                 style={{
                   display: 'flex',
                   gap: 10,
-                  alignItems:
-                    'center',
-                  flexWrap:
-                    'wrap'
+                  alignItems: 'center',
+                  flexWrap: 'wrap'
                 }}
               >
-
                 <button
                   type="button"
                   className="btn btn-outline"
-                  onClick={
-                    openPdf
-                  }
-                  disabled={
-                    pdfLoading
-                  }
+                  onClick={openPdf}
+                  disabled={pdfLoading}
                 >
                   {pdfLoading
                     ? 'Opening PDF...'
                     : '📄 Open PDF'}
                 </button>
-
               </div>
-
             ) : (
-
               <div
                 style={{
                   padding: 14,
-                  border:
-                    '1px solid var(--border)',
+                  border: '1px solid var(--border)',
                   borderRadius: 10,
-                  color:
-                    'var(--text-500)'
+                  color: 'var(--text-500)'
                 }}
               >
-                No PDF has been uploaded
-                for this lesson yet.
+                No PDF has been uploaded for this lesson yet.
               </div>
-
             )}
-
           </div>
 
 
-          {/* =================================================
-              LESSON CONTENT
-          ================================================= */}
+          {/* LESSON OVERVIEW */}
 
           <div
             className="card"
             style={{
-              padding: 22
+              padding: 22,
+              marginBottom: 18
             }}
           >
-
             <h2
               style={{
                 marginTop: 0
@@ -946,25 +895,162 @@ export default function LessonPlayer() {
 
             <p
               style={{
-                whiteSpace:
-                  'pre-wrap',
+                whiteSpace: 'pre-wrap',
                 lineHeight: 1.7,
-                color:
-                  'var(--text-700)'
+                color: 'var(--text-700)'
               }}
             >
               {lesson.content ||
                 'No lesson description has been added yet.'}
             </p>
+          </div>
 
+
+          {/* MY LESSON NOTES */}
+
+          <div
+            className="card"
+            style={{
+              padding: 22,
+              marginBottom: 20
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: 12,
+                flexWrap: 'wrap',
+                marginBottom: 12
+              }}
+            >
+              <div>
+                <h2
+                  style={{
+                    margin: 0
+                  }}
+                >
+                  📝 My Lesson Notes
+                </h2>
+
+                <p
+                  style={{
+                    marginTop: 6,
+                    marginBottom: 0,
+                    color: 'var(--text-500)',
+                    fontSize: 13
+                  }}
+                >
+                  Write important points and save them for later.
+                </p>
+              </div>
+
+              <span
+                style={{
+                  fontSize: 12,
+                  color: 'var(--text-500)'
+                }}
+              >
+                {notes.length.toLocaleString()} / 50,000 characters
+              </span>
+            </div>
+
+            {loadingNotes ? (
+              <div
+                style={{
+                  padding: 20,
+                  textAlign: 'center',
+                  color: 'var(--text-500)'
+                }}
+              >
+                Loading your notes...
+              </div>
+            ) : (
+              <>
+                <textarea
+                  value={notes}
+                  onChange={(event) => {
+                    setNotes(event.target.value)
+                  }}
+                  placeholder={`Write your lesson notes here...
+
+For example:
+• Important concepts
+• Key definitions
+• Examples to remember
+• Questions to ask your trainer`}
+                  maxLength={50000}
+                  rows={10}
+                  aria-label="My lesson notes"
+                  style={{
+                    width: '100%',
+                    boxSizing: 'border-box',
+                    padding: 14,
+                    border: '1px solid var(--border)',
+                    borderRadius: 10,
+                    background: 'var(--bg-card, white)',
+                    color: 'var(--text-900)',
+                    fontSize: 14,
+                    lineHeight: 1.7,
+                    resize: 'vertical',
+                    fontFamily: 'inherit',
+                    outlineOffset: 2
+                  }}
+                />
+
+                {notesUpdatedAt && (
+                  <p
+                    style={{
+                      marginTop: 8,
+                      marginBottom: 0,
+                      color: 'var(--text-500)',
+                      fontSize: 12
+                    }}
+                  >
+                    Last saved:{' '}
+                    {new Date(notesUpdatedAt).toLocaleString()}
+                  </p>
+                )}
+
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: 12,
+                    flexWrap: 'wrap',
+                    marginTop: 14
+                  }}
+                >
+                  <span
+                    style={{
+                      color: 'var(--text-500)',
+                      fontSize: 12
+                    }}
+                  >
+                    Your notes are saved to your account.
+                  </span>
+
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={saveLessonNotes}
+                    disabled={savingNotes || loadingNotes}
+                  >
+                    {savingNotes
+                      ? 'Saving Notes...'
+                      : '💾 Save Notes'}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
 
         </div>
 
 
-        {/* ===================================================
-            RIGHT SIDE - COURSE CONTENT
-        =================================================== */}
+        {/* RIGHT SIDE - COURSE CONTENT */}
 
         <aside
           className="card"
@@ -974,7 +1060,6 @@ export default function LessonPlayer() {
             top: 20
           }}
         >
-
           <h3
             style={{
               marginTop: 0
@@ -983,129 +1068,87 @@ export default function LessonPlayer() {
             Course Content
           </h3>
 
-
           {modules.length === 0 ? (
-
             <p
               style={{
-                color:
-                  'var(--text-500)'
+                color: 'var(--text-500)'
               }}
             >
-              No modules have been
-              added to this course yet.
+              No modules have been added to this course yet.
             </p>
-
           ) : (
-
-            modules.map(
-              (module) => (
-
+            modules.map((module) => (
+              <div
+                key={module.id}
+                style={{
+                  marginBottom: 20
+                }}
+              >
                 <div
-                  key={module.id}
                   style={{
-                    marginBottom: 20
+                    fontSize: 12,
+                    fontWeight: 800,
+                    color: '#94a3b8',
+                    textTransform: 'uppercase',
+                    marginBottom: 8
                   }}
                 >
-
-                  <div
-                    style={{
-                      fontSize: 12,
-                      fontWeight: 800,
-                      color:
-                        '#94a3b8',
-                      textTransform:
-                        'uppercase',
-                      marginBottom: 8
-                    }}
-                  >
-                    {module.module ||
-                      module.title ||
-                      `Module ${module.id}`}
-                  </div>
-
-
-                  {(module.lessons ||
-                    []).map(
-                    (item) => (
-
-                      <Link
-                        key={item.id}
-                        to={`/learner/course/${courseId}/lesson/${item.id}`}
-                        style={{
-                          display:
-                            'flex',
-                          justifyContent:
-                            'space-between',
-                          alignItems:
-                            'center',
-                          gap: 8,
-                          padding:
-                            '10px 8px',
-                          borderRadius: 8,
-                          textDecoration:
-                            'none',
-                          background:
-                            item.id ===
-                            lesson.id
-                              ? '#e8eefc'
-                              : 'transparent',
-                          color:
-                            item.id ===
-                            lesson.id
-                              ? '#2563eb'
-                              : 'var(--text-900)',
-                          marginBottom: 3
-                        }}
-                      >
-
-                        <span
-                          style={{
-                            display:
-                              'flex',
-                            gap: 7,
-                            alignItems:
-                              'center'
-                          }}
-                        >
-
-                          <span>
-                            {item.completed
-                              ? '✓'
-                              : '○'}
-                          </span>
-
-                          <span>
-                            {item.title}
-                          </span>
-
-                        </span>
-
-                        <span
-                          style={{
-                            fontSize: 12,
-                            color:
-                              'var(--text-500)',
-                            whiteSpace:
-                              'nowrap'
-                          }}
-                        >
-                          {item.duration ||
-                            '00:00'}
-                        </span>
-
-                      </Link>
-
-                    )
-                  )}
-
+                  {module.module ||
+                    module.title ||
+                    `Module ${module.id}`}
                 </div>
 
-              )
-            )
+                {(module.lessons || []).map((item) => (
+                  <Link
+                    key={item.id}
+                    to={`/learner/course/${courseId}/lesson/${item.id}`}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      gap: 8,
+                      padding: '10px 8px',
+                      borderRadius: 8,
+                      textDecoration: 'none',
+                      background:
+                        String(item.id) === String(lesson.id)
+                          ? '#e8eefc'
+                          : 'transparent',
+                      color:
+                        String(item.id) === String(lesson.id)
+                          ? '#2563eb'
+                          : 'var(--text-900)',
+                      marginBottom: 3
+                    }}
+                  >
+                    <span
+                      style={{
+                        display: 'flex',
+                        gap: 7,
+                        alignItems: 'center'
+                      }}
+                    >
+                      <span>
+                        {item.completed ? '✓' : '○'}
+                      </span>
 
+                      <span>{item.title}</span>
+                    </span>
+
+                    <span
+                      style={{
+                        fontSize: 12,
+                        color: 'var(--text-500)',
+                        whiteSpace: 'nowrap'
+                      }}
+                    >
+                      {item.duration || '00:00'}
+                    </span>
+                  </Link>
+                ))}
+              </div>
+            ))
           )}
-
         </aside>
 
       </div>

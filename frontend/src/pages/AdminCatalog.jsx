@@ -24,6 +24,15 @@ export default function AdminCatalog() {
   const [expanded, setExpanded] =
     useState({})
 
+  const [priceCourse, setPriceCourse] =
+  useState(null)
+
+  const [priceValue, setPriceValue] =
+    useState('')
+
+  const [savingPrice, setSavingPrice] =
+    useState(false)
+
   async function loadCatalog() {
 
     try {
@@ -208,6 +217,66 @@ async function handleDeleteCourse(course) {
       err.message ||
       'Unable to delete course'
     )
+  }
+}
+async function handleSavePrice() {
+
+  if (!priceCourse) {
+    return
+  }
+
+  const price = Number(priceValue)
+
+  if (!Number.isFinite(price) || price < 0) {
+    setError('Please enter a valid price')
+    return
+  }
+
+  try {
+
+    setSavingPrice(true)
+    setError('')
+
+    const data = await apiRequest(
+      `/api/admin/courses/${encodeURIComponent(priceCourse.id)}/price`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          course_fee: price
+        })
+      }
+    )
+
+    setCourses((previous) =>
+      previous.map((item) =>
+        item.id === priceCourse.id
+          ? {
+              ...item,
+              course_fee: price
+            }
+          : item
+      )
+    )
+
+    setPriceCourse(null)
+    setPriceValue('')
+
+  } catch (err) {
+
+    console.error(
+      'Course price update error:',
+      err
+    )
+
+    setError(
+      err.message ||
+      'Unable to update course price'
+    )
+
+  } finally {
+
+    setSavingPrice(false)
+
   }
 }
 
@@ -408,6 +477,13 @@ async function handleDeleteCourse(course) {
 
                         <span>
                           <strong>
+                            Price:
+                          </strong>{' '}
+                          ₹{Number(course.course_fee || 0).toFixed(2)}
+                        </span>
+
+                        <span>
+                          <strong>
                             Status:
                           </strong>{' '}
                           <span
@@ -449,6 +525,21 @@ async function handleDeleteCourse(course) {
                       </button>
 
                       <button
+                          className="btn btn-outline"
+                          onClick={() => {
+                            setPriceCourse(course)
+                            setPriceValue(
+                              course.course_fee != null
+                                ? String(course.course_fee)
+                                : ''
+                            )
+                            setError('')
+                          }}
+                        >
+                          Set Price
+                        </button>
+
+                      <button
                         className="btn btn-outline"
                         onClick={() =>
                           handleToggleStatus(course)
@@ -476,6 +567,104 @@ async function handleDeleteCourse(course) {
                     </div>
 
                   </div>
+                  {priceCourse?.id === course.id && (
+
+                        <div
+                          style={{
+                            marginTop: 16,
+                            padding: 16,
+                            border: '1px solid var(--border)',
+                            borderRadius: 10,
+                            background: 'var(--surface-2)'
+                          }}
+                        >
+
+                          <h3
+                            style={{
+                              margin: '0 0 12px'
+                            }}
+                          >
+                            Set Course Price
+                          </h3>
+
+                          <p
+                            style={{
+                              margin: '0 0 12px',
+                              fontSize: 14
+                            }}
+                          >
+                            Course:{' '}
+                            <strong>
+                              {course.title}
+                            </strong>
+                          </p>
+
+                          <div
+                            style={{
+                              display: 'flex',
+                              gap: 10,
+                              alignItems: 'center',
+                              flexWrap: 'wrap'
+                            }}
+                          >
+
+                            <div
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 6
+                              }}
+                            >
+
+                              <span>₹</span>
+
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={priceValue}
+                                onChange={(e) =>
+                                  setPriceValue(e.target.value)
+                                }
+                                placeholder="Enter price"
+                                style={{
+                                  width: 160,
+                                  padding: '9px 10px',
+                                  border:
+                                    '1px solid var(--border)',
+                                  borderRadius: 7,
+                                  boxSizing: 'border-box'
+                                }}
+                              />
+
+                            </div>
+
+                            <button
+                              className="btn btn-primary"
+                              onClick={handleSavePrice}
+                              disabled={savingPrice}
+                            >
+                              {savingPrice
+                                ? 'Saving...'
+                                : 'Save Price'}
+                            </button>
+
+                            <button
+                              className="btn btn-outline"
+                              onClick={() => {
+                                setPriceCourse(null)
+                                setPriceValue('')
+                              }}
+                              disabled={savingPrice}
+                            >
+                              Cancel
+                            </button>
+
+                          </div>
+
+                        </div>
+
+                      )}
 
                   {isOpen && (
 

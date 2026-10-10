@@ -7,3 +7,6 @@ PyMySQL==1.1.1
 Flask-Migrate==4.1.0
 pytest==9.1.1
 Flask-Limiter==4.1.1
+reportlab
+qrcode
+razorpay

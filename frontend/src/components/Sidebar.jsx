@@ -44,9 +44,19 @@ const NAV = {
       icon: '🗓️',
     },
     {
+      to: '/admin/csv-import',
+      label: 'Bulk CSV Import',
+      icon: '📥',
+    },
+    {
       to: '/admin/certificates',
       label: 'Certificates',
       icon: '🏅',
+    },
+    {
+      to: '/admin/audit-logs',
+      label: 'Audit Logs',
+      icon: '📝',
     },
     {
       to: '/admin/payments',
@@ -107,10 +117,32 @@ const NAV = {
       icon: '📊',
     },
     {
+      to: '/trainer/calendar',
+      label: 'Calendar',
+      icon: '📅',
+    },
+    {
+      to: '/trainer/question-bank',
+      label: 'Question Bank',
+      icon: '📚',
+    },
+    {
+      to: '/trainer/mixed-exams',
+      label: 'Mixed Exams',
+      icon: '📝',
+   },
+    {
       to: '/trainer/leaderboard',
       label: 'Leaderboard',
       icon: '🏆',
     },
+    {
+      to: '/trainer/attendance',
+      label: 'Attendance',
+      icon: '📋',
+    },
+    
+
     {
       to: '/trainer/settings',
       label: 'Settings',
@@ -176,9 +208,19 @@ const NAV = {
       icon: '📈',
     },
     {
+      to: '/learner/attendance',
+      label: 'Attendance',
+      icon: '📋',
+    },
+    {
       to: '/learner/leaderboard',
       label: 'Leaderboard',
       icon: '🏆',
+    },
+    {
+      to: '/learner/payments',
+      label: 'Payments & Invoices',
+      icon: '💳',
     },
     {
       to: '/learner/community',
